@@ -17,9 +17,11 @@
 #else
 #define DBG(E...)
 #endif
-
-#define RAD_TO_DEG(R) ((R)*180.0 / M_PI)
-#define DEG_TO_RAD(D) ((D)*M_PI / 180.0)
+#ifdef PRINT_TIMES
+#define TIMES(E...) E
+#else
+#define TIMES(E...)
+#endif
 
 using namespace std;
 using namespace cv;
@@ -41,24 +43,39 @@ const char CAMERA_REAR_WINDOW_NAME[] = "Camera rear";
 const char PREVIEW_WINDOW_NAME[] = "Preview";
 const char HELP_DIALOG[] = " (<file> | <file_front> <file_rear>) [--resolution -r <width> <height>] [--fps -f <fps>] [--codec -c <fourcc>]"
 						   " [--parameters -p <x_offset_front> <y_offset_front> <rotation_front> <fov_front>"
-						   " <radius_front> <x_offset_rear> <y_offset_rear> <rotation_rear> <radius_rear> <fov_rear>]";
+						   " <radius_front> <x_offset_rear> <y_offset_rear> <rotation_rear> <radius_rear> <fov_rear>] [--floating-point -fp]";
 
 Mat *mapx, *mapy;
 
+/**
+ * @brief Holds calibration parameters
+ * 
+ */
 struct calib_params
 {
 	int x_off_front, y_off_front, rot_front, radius_front, fov_front,
 		x_off_rear, y_off_rear, rot_rear, radius_rear, fov_rear;
 };
+/**
+ * @brief Hold the arguments parsed from commandline
+ * 
+ */
 struct program_args
 {
 	char *file, *file_front, *file_rear, *fourcc_str;
 	int width, height, fps, fourcc;
 	calib_params params;
-	bool is_single_input, has_resolution, has_fps, has_fourcc, has_parameters;
+	bool is_single_input, has_resolution, has_fps, has_fourcc, has_parameters, floating_point_output;
 };
 
-Vec3b get_px_pos(const Mat &front_img, const Mat &rear_img, int half_width, float r, float t, bool is_front, int i, int j, const calib_params *const params)
+/**
+ * @brief Converts degrees to radians.
+ * @param deg degrees
+ * @return radians
+ */
+double inline deg2rad(double deg) { return deg * M_PI / 180.; }
+
+Vec3b get_px_pos(const Mat &front_img, const Mat &rear_img, int half_width, float r, float t, bool is_front, int i, int j, const calib_params *const params, const bool fp_out)
 {
 	float x, y;
 
@@ -90,24 +107,33 @@ Vec3b get_px_pos(const Mat &front_img, const Mat &rear_img, int half_width, floa
 		y = half_width - 1;
 
 	// save mapping
-	mapx->at<unsigned short>(j, i) = is_front
-										 ? (unsigned short)x
-										 : half_width + (unsigned short)x;
-	mapy->at<unsigned short>(j, i) = (unsigned short)y;
-
+	if (fp_out)
+	{
+		mapx->at<float>(j, i) = is_front
+									? x
+									: half_width + x;
+		mapy->at<float>(j, i) = y;
+	}
+	else
+	{
+		mapx->at<unsigned short>(j, i) = is_front
+											 ? (unsigned short)x
+											 : half_width + (unsigned short)x;
+		mapy->at<unsigned short>(j, i) = (unsigned short)y;
+	}
 	return is_front
 			   ? front_img.at<Vec3b>((int)y, (int)x)
 			   : rear_img.at<Vec3b>((int)y, (int)x);
 }
 
-int dualfisheye2equirectangular(const Mat &front_img, const Mat &rear_img, Mat &equi_img, int width, int height, const calib_params *const params)
+int dualfisheye2equirectangular(const Mat &front_img, const Mat &rear_img, Mat &equi_img, int width, int height, const calib_params *const params, const bool fp_out)
 {
-	float frontlimit = DEG_TO_RAD(90.0);
-	float blendlimit = DEG_TO_RAD(90.0);
-	float blendsize = DEG_TO_RAD(0.0); // not supportend e.g. 16 (8+8)
-	float fovf = DEG_TO_RAD(FOV_DEFAULT + params->fov_front);
-	float fovr = DEG_TO_RAD(FOV_DEFAULT + params->fov_rear);
-	float semi = DEG_TO_RAD(180.0);
+	float frontlimit = deg2rad(90.0);
+	float blendlimit = deg2rad(90.0);
+	float blendsize = deg2rad(0.0); // not supportend e.g. 16 (8+8)
+	float fovf = deg2rad(FOV_DEFAULT + params->fov_front);
+	float fovr = deg2rad(FOV_DEFAULT + params->fov_rear);
+	float semi = deg2rad(180.0);
 	int i, j;
 	float phi, theta, a, r, t, x, y, z;
 	float bf, ar, rr, tr, bfr;
@@ -131,30 +157,30 @@ int dualfisheye2equirectangular(const Mat &front_img, const Mat &rear_img, Mat &
 			if (a < frontlimit)
 			{ //  # front
 				r = 2.0 * a / fovf;
-				t = atan2(z, y) - DEG_TO_RAD(params->rot_front / 10.);
-				equi_img.at<Vec3b>(j, i) = get_px_pos(front_img, rear_img, height, r, t, true, i, j, params);
+				t = atan2(z, y) - deg2rad(params->rot_front / 10.);
+				equi_img.at<Vec3b>(j, i) = get_px_pos(front_img, rear_img, height, r, t, true, i, j, params, fp_out);
 			}
 			else if (a < blendlimit)
 			{ //  # blend
 				// fr
 				r = 2 * a / fovf;
-				t = atan2(z, y) - DEG_TO_RAD(params->rot_front / 10.);
+				t = atan2(z, y) - deg2rad(params->rot_front / 10.);
 				bf = 1 - ((a - frontlimit) / blendsize);
 				// re
 				ar = semi - a;
 				rr = 2 * ar / fovr;
-				tr = atan2(z, -y) - DEG_TO_RAD(params->rot_rear / 10.);
+				tr = atan2(z, -y) - deg2rad(params->rot_rear / 10.);
 				bfr = 1 - bf;
 				//print(size,r,t,rr,tr, bfr);
 				if (rr > 0.999)
 					rr = 0.999;
-				equi_img.at<Vec3b>(j, i) = bf * get_px_pos(front_img, rear_img, height, r, t, true, i, j, params) + bfr * get_px_pos(front_img, rear_img, height, r, t, false, i, j, params);
+				equi_img.at<Vec3b>(j, i) = bf * get_px_pos(front_img, rear_img, height, r, t, true, i, j, params, fp_out) + bfr * get_px_pos(front_img, rear_img, height, r, t, false, i, j, params, fp_out);
 			}
 			else
 			{ //  # rear
 				r = 2.0 * (semi - a) / fovr;
-				t = atan2(z, -y) - DEG_TO_RAD(params->rot_rear / 10.);
-				equi_img.at<Vec3b>(j, i) = get_px_pos(front_img, rear_img, height, r, t, false, i, j, params);
+				t = atan2(z, -y) - deg2rad(params->rot_rear / 10.);
+				equi_img.at<Vec3b>(j, i) = get_px_pos(front_img, rear_img, height, r, t, false, i, j, params, fp_out);
 			}
 		}
 	}
@@ -162,6 +188,13 @@ int dualfisheye2equirectangular(const Mat &front_img, const Mat &rear_img, Mat &
 	return 0;
 }
 
+/**
+ * @brief Parses the arguments given in commandline
+ * 
+ * @param argc argc from main
+ * @param argv argv from main
+ * @param args parsed arguments
+ */
 void parse_args(int argc, char **argv, program_args *args)
 {
 	if (argc == 1)
@@ -253,6 +286,10 @@ void parse_args(int argc, char **argv, program_args *args)
 			args->has_parameters = true;
 			i += 10;
 		}
+		else if (strcmp(argv[i], "-fp") == 0 || strcmp(argv[i], "--floating-point") == 0)
+		{
+			args->floating_point_output = true;
+		}
 		else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0)
 		{
 			cout << argv[0] << HELP_DIALOG << endl;
@@ -302,34 +339,36 @@ int main(int argc, char **argv)
 			return -1;
 		}
 
-		// set optional resolution for cameras
-		if (args.has_resolution)
-		{
-			width = args.width;
-			height = args.height;
-			// try to set given resolution and check success
-			if (!cap.set(CAP_PROP_FRAME_WIDTH, width))
-				printf("Couldn't set width to %d\n", width);
-			if (!cap.set(CAP_PROP_FRAME_HEIGHT, height))
-				printf("Couldn't set heigth to %d\n", height);
-		}
-		else
-		{
+		//TODO sets the caps but cameras don't change
+		// // set optional fps for cameras
+		// if (args.has_fps)
+		// {
+		// 	if (!cap.set(CAP_PROP_FPS, args.fps))
+		// 		printf("Couldn't set FPS to %d\n", args.fps);
+		// }
+		// // set optional codec for cameras
+		// if (args.has_fourcc)
+		// {
+		// 	if (!cap.set(CV_CAP_PROP_FOURCC, static_cast<double>(args.fourcc)) && cap.get(CV_CAP_PROP_FOURCC) == args.fourcc)
+		// 		printf("Couldn't set codec to %s\n", args.fourcc_str);
+		// 	DBG(cout << args.fourcc_str << endl);
+		// }
+		// // set optional resolution for cameras
+		// if (args.has_resolution)
+		// {
+		// 	width = args.width;
+		// 	height = args.height;
+		// 	// try to set given resolution and check success
+		// 	if (!cap.set(CAP_PROP_FRAME_WIDTH, width))
+		// 		printf("Couldn't set width to %d\n", width);
+		// 	if (!cap.set(CAP_PROP_FRAME_HEIGHT, height))
+		// 		printf("Couldn't set heigth to %d\n", height);
+		// }
+		// else
+		// {
 			width = cap.get(CAP_PROP_FRAME_WIDTH);
 			height = cap.get(CAP_PROP_FRAME_HEIGHT);
-		}
-		// set optional fps for cameras
-		if (args.has_fps)
-		{
-			if (!cap.set(CAP_PROP_FPS, args.fps))
-				printf("Couldn't set FPS to %d\n", args.fps);
-		}
-		// set optional codec for cameras
-		if (args.has_fourcc)
-		{
-			if (!cap.set(CAP_PROP_FOURCC, static_cast<double>(args.fourcc)))
-				printf("Couldn't set codec to %s\n", args.fourcc_str);
-		}
+		// }
 	}
 	else
 	{
@@ -346,22 +385,37 @@ int main(int argc, char **argv)
 			return -1;
 		}
 
-		if (args.has_resolution)
-		{
-			width = args.width;
-			height = args.height;
-			// try to set given resolution and check success
-			if (!cap_front.set(CAP_PROP_FRAME_WIDTH, height))
-				printf("Couldn't set front width to %d\n", height);
-			if (!cap_front.set(CAP_PROP_FRAME_HEIGHT, height))
-				printf("Couldn't set front heigth to %d\n", height);
-			if (!cap_rear.set(CAP_PROP_FRAME_WIDTH, height))
-				printf("Couldn't set rear width to %d\n", height);
-			if (!cap_rear.set(CAP_PROP_FRAME_HEIGHT, height))
-				printf("Couldn't set rear heigth to %d\n", height);
-		}
-		else
-		{
+		//TODO sets the caps but cameras don't change
+		// if (args.has_fps)
+		// {
+		// 	if (!cap_front.set(CAP_PROP_FPS, args.fps))
+		// 		printf("Couldn't set front FPS to %d\n", args.fps);
+		// 	if (!cap_rear.set(CAP_PROP_FPS, args.fps))
+		// 		printf("Couldn't set rear FPS to %d\n", args.fps);
+		// }
+		// if (args.has_fourcc)
+		// {
+		// 	if (!cap_front.set(CAP_PROP_FOURCC, static_cast<double>(args.fourcc)))
+		// 		printf("Couldn't set front codec to %s\n", args.fourcc_str);
+		// 	if (!cap_rear.set(CAP_PROP_FOURCC, static_cast<double>(args.fourcc)))
+		// 		printf("Couldn't set rear codec to %s\n", args.fourcc_str);
+		// }
+		// if (args.has_resolution)
+		// {
+		// 	width = args.width;
+		// 	height = args.height;
+		// 	// try to set given resolution and check success
+		// 	if (!cap_front.set(CAP_PROP_FRAME_WIDTH, height))
+		// 		printf("Couldn't set front width to %d\n", height);
+		// 	if (!cap_front.set(CAP_PROP_FRAME_HEIGHT, height))
+		// 		printf("Couldn't set front heigth to %d\n", height);
+		// 	if (!cap_rear.set(CAP_PROP_FRAME_WIDTH, height))
+		// 		printf("Couldn't set rear width to %d\n", height);
+		// 	if (!cap_rear.set(CAP_PROP_FRAME_HEIGHT, height))
+		// 		printf("Couldn't set rear heigth to %d\n", height);
+		// }
+		// else
+		// {
 			if (cap_front.get(CAP_PROP_FRAME_WIDTH) != cap_rear.get(CAP_PROP_FRAME_WIDTH) || cap_front.get(CAP_PROP_FRAME_HEIGHT) != cap_rear.get(CAP_PROP_FRAME_HEIGHT))
 			{
 				printf("Resolution of the front and rear video differ.\n");
@@ -369,21 +423,7 @@ int main(int argc, char **argv)
 			}
 			width = cap_front.get(CAP_PROP_FRAME_WIDTH) * 2;
 			height = cap_front.get(CAP_PROP_FRAME_HEIGHT);
-		}
-		if (args.has_fps)
-		{
-			if (!cap_front.set(CAP_PROP_FPS, args.fps))
-				printf("Couldn't set front FPS to %d\n", args.fps);
-			if (!cap_rear.set(CAP_PROP_FPS, args.fps))
-				printf("Couldn't set rear FPS to %d\n", args.fps);
-		}
-		if (args.has_fourcc)
-		{
-			if (!cap_front.set(CAP_PROP_FOURCC, static_cast<double>(args.fourcc)))
-				printf("Couldn't set front codec to %s\n", args.fourcc_str);
-			if (!cap_rear.set(CAP_PROP_FOURCC, static_cast<double>(args.fourcc)))
-				printf("Couldn't set rear codec to %s\n", args.fourcc_str);
-		}
+		// }
 	}
 
 	// create windows
@@ -421,9 +461,10 @@ int main(int argc, char **argv)
 			printf("Video is empty.\n");
 			return -1;
 		}
-				// split frame in front and rear
-		frame_front = frame(Rect(0, 0, height, height));
-		frame_rear = frame(Rect(height, 0, height, height));
+		DBG(cout << "width: " << frame.cols << " height: " << frame.rows << endl);
+		// split frame in front and rear
+		frame_front = frame(Rect(0, 0, frame.rows, frame.rows));
+		frame_rear = frame(Rect(frame.rows, 0, frame.rows, frame.rows));
 	}
 	else
 	{
@@ -440,11 +481,19 @@ int main(int argc, char **argv)
 			return -1;
 		}
 	}
-	// init outout image
+	// init output image
 	equiframe.create(height, width, frame_front.type());
 	// create maps
-	mapx = new Mat(height, width, CV_16UC1);
-	mapy = new Mat(height, width, CV_16UC1);
+	if (args.floating_point_output)
+	{
+		mapx = new Mat(height, width, CV_32FC1);
+		mapy = new Mat(height, width, CV_32FC1);
+	}
+	else
+	{
+		mapx = new Mat(height, width, CV_16UC1);
+		mapy = new Mat(height, width, CV_16UC1);
+	}
 
 	printf("Controls:\n\tspace:\tstart/stop videoplayback\n\t<-/->:\tdecrement/increment current slider\n\ttab:\tnext slider\n"
 		   "\tenter:\tsave to file and exit\n\tesc:\texit without saving\n");
@@ -471,8 +520,8 @@ int main(int argc, char **argv)
 					cap >> frame;
 				}
 				// split frame in front and rear
-				frame_front = frame(Rect(0, 0, height, height));
-				frame_rear = frame(Rect(height, 0, height, height));
+				frame_front = frame(Rect(0, 0, frame.rows, frame.rows));
+				frame_rear = frame(Rect(frame.rows, 0, frame.rows, frame.rows));
 			}
 			else
 			{
@@ -529,13 +578,13 @@ int main(int argc, char **argv)
 		imshow(CAMERA_REAR_WINDOW_NAME, circleframe_rear);
 
 		// mapping
-		dualfisheye2equirectangular(frame_front, frame_rear, equiframe, width, height, params);
+		dualfisheye2equirectangular(frame_front, frame_rear, equiframe, width, height, params, args.floating_point_output);
 		// Auf den Schirm Spoki
 		imshow(PREVIEW_WINDOW_NAME, equiframe);
 
 		end = chrono::steady_clock::now();
 		loop_time = end - start;
-		DBG(cout << "frametime: " << chrono::duration_cast<chrono::milliseconds>(loop_time).count() << "ms" << endl;)
+		TIMES(cout << "frametime: " << chrono::duration_cast<chrono::milliseconds>(loop_time).count() << "ms" << endl;)
 
 		ch = waitKey(1);
 		if (ch == ' ')
@@ -566,7 +615,14 @@ int main(int argc, char **argv)
 		{
 			for (i = 0; i < width; i++)
 			{
-				mapping_file << mapx->at<unsigned short>(j, i) << ' ' << mapy->at<unsigned short>(j, i) << '\n';
+				if (args.floating_point_output)
+				{
+					mapping_file << mapx->at<float>(j, i) << ' ' << mapy->at<float>(j, i) << '\n';
+				}
+				else
+				{
+					mapping_file << mapx->at<unsigned short>(j, i) << ' ' << mapy->at<unsigned short>(j, i) << '\n';
+				}
 			}
 		}
 		mapping_file.close();

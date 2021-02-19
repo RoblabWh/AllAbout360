@@ -10,10 +10,14 @@ endif()
 
 include_directories(${OpenCV_INCLUDE_DIRS})
 
-set(CMAKE_CXX_FLAGS "-Wall")
-set(CMAKE_CXX_FLAGS_DEBUG "-g -O3 -DDEBUG")
+set(CMAKE_CXX_FLAGS_DEBUG "-Wall -g -DDEBUG")
 set(CMAKE_CXX_FLAGS_RELEASE "-O3")
- 
+
+set(TIMES OFF CACHE BOOL "Print frametimes in terminal")
+if (TIMES)
+	set(CMAKE_CXX_FLAGS "-DPRINT_TIMES")
+endif()
+
 set(EXE dfe2eqr-calib)
 
 add_executable(${EXE} ${EXE}.cpp)

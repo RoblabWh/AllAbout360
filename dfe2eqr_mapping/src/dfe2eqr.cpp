@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <opencv2/opencv.hpp>
+#include <fstream>
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -7,11 +8,57 @@
 // g++ -O2 -fopenmp -o dfe2eqr dfe2eqr.cpp  `pkg-config --cflags opencv` `pkg-config --libs opencv`
 
 #ifdef DEBUG
-#include <chrono>
 #define DBG(E...) E
 #else
 #define DBG(E...)
 #endif
+#ifdef PRINT_TIMES
+#include <chrono>
+#define TIMES(E...) E
+#else
+#define TIMES(E...)
+#endif
+
+using namespace std;
+
+namespace cv
+{
+	typedef cv::Vec<double, 5> Vec5d;
+}
+
+void read_mapping_file(string path, cv::Mat &mapping_table)
+{
+	int width, height;
+	ifstream file(path);
+	if (!file.is_open())
+	{
+		cerr << "Couldn't open \"" << path << "\" for reading." << endl;
+		exit(EXIT_FAILURE);
+	}
+	if (!(file >> width >> height))
+	{
+		cerr << "Couldn't read resolution from file \"" << path << "\"." << endl;
+		exit(EXIT_FAILURE);
+	}
+	cout << width << ' ' << height << endl;
+	mapping_table.create(height, width, CV_64FC(5));
+	cv::Vec5d mte;
+	for (int j = 0; j < height; j++)
+	{
+		for (int i = 0; i < width; i++)
+		{
+			if (file >> mte[0] >> mte[1] >> mte[2] >> mte[3] >> mte[4])
+			{
+				mapping_table.at<cv::Vec5d>(j, i) = mte;
+			}
+			else
+			{
+				cerr << "Error reading mapping file \"" << path << "\" on line " << j * width + i + 1 << '.' << endl;
+				exit(EXIT_FAILURE);
+			}
+		}
+	}
+}
 
 int main(int argc, char **argv)
 {
@@ -147,6 +194,8 @@ int main(int argc, char **argv)
 	// init output mat
 	equiframe.create(height, width, frame_front.type());
 
+	cv::VideoWriter wrt("test.mp4", cap.get(cv::CAP_PROP_FOURCC), cap.get(cv::CAP_PROP_FPS), cv::Size(cap.get(cv::CAP_PROP_FRAME_WIDTH), cap.get(cv::CAP_PROP_FRAME_HEIGHT)));
+
 	while (true)
 	{
 		DBG(mapping_start = std::chrono::steady_clock::now();)
@@ -170,6 +219,7 @@ int main(int argc, char **argv)
 		DBG(preview_start = std::chrono::steady_clock::now();)
 		// Auf den Schirm Spoki
 		imshow("frame", equiframe);
+		wrt << equiframe;
 		DBG(preview_end = std::chrono::steady_clock::now();
 			preview_sum += std::chrono::duration_cast<std::chrono::duration<double>>(preview_end - preview_start).count();)
 
@@ -189,7 +239,7 @@ int main(int argc, char **argv)
 		// wait for esc to exit
 		if (cv::waitKey(1) == 27)
 			break;
-		
+
 		DBG(loading_start = std::chrono::steady_clock::now();)
 
 		// get a new frame from camera
@@ -208,7 +258,7 @@ int main(int argc, char **argv)
 			if (frame_front.empty() || frame_rear.empty())
 				break;
 		}
-		
+
 		DBG(loading_end = std::chrono::steady_clock::now();
 			loading_sum += std::chrono::duration_cast<std::chrono::duration<double>>(loading_end - loading_start).count();)
 	}

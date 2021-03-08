@@ -1,4 +1,4 @@
 cmake_minimum_required(VERSION 3.9)
 project(dualfisheye2equirectangular)
-add_subdirectory(dfe2eqr_mapping)
-add_subdirectory(dfe2eqr_calibration)
+add_subdirectory(mapping)
+add_subdirectory(calibration)

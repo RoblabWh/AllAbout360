@@ -29,16 +29,15 @@ typedef Vec<double, 5> Vec5d;
 
 const int FOV_DEFAULT = 190; // >= 180
 
-const int SLIDER_PX_OFF_RANGE = 200, SLIDER_PX_OFF_DEFAULT = 100;
-const int SLIDER_ROT_RANGE = 2000, SLIDER_ROT_DEFAULT = 1000;
-const int SLIDER_RADIUS_RANGE = 2000, SLIDER_RADIUS_DEFAULT = 1000;
+const int SLIDER_FACTOR_RANGE = 2000, SLIDER_FACTOR_DEFAULT = 1000;
+const int SLIDER_ROT_RANGE = 3600, SLIDER_ROT_DEFAULT = 1800;
 const int SLIDER_FOV_RANGE = 100, SLIDER_FOV_DEFAULT = 10;
 const int SLIDER_BLEND_RANGE = SLIDER_FOV_RANGE / 2, SLIDER_BLEND_DEFAULT = 0;
-const string SLIDER_PX_OFF_NAME = string(" += slider - ") + to_string(SLIDER_PX_OFF_DEFAULT);
-const string SLIDER_X_OFF_NAME = string("x") + SLIDER_PX_OFF_NAME;
-const string SLIDER_Y_OFF_NAME = string("y") + SLIDER_PX_OFF_NAME;
+const string SLIDER_FACTOR_NAME = string(" *= slider / ") + to_string(SLIDER_FACTOR_DEFAULT);
+const string SLIDER_X_OFF_NAME = string("x") + SLIDER_FACTOR_NAME;
+const string SLIDER_Y_OFF_NAME = string("y") + SLIDER_FACTOR_NAME;
+const string SLIDER_RADIUS_NAME = string("radius") + SLIDER_FACTOR_NAME;
 const string SLIDER_ROT_NAME = string("rot = ((slider - ") + to_string(SLIDER_ROT_DEFAULT) + ") / 10.0)°";
-const string SLIDER_RADIUS_NAME = string("radius *= slider / ") + to_string(SLIDER_RADIUS_DEFAULT);
 const string SLIDER_FOV_NAME = string("fov = (") + to_string(FOV_DEFAULT) + string(" + slider - ") + to_string(SLIDER_FOV_DEFAULT) + ")°";
 const string SLIDER_BLEND_NAME = string("blend size = (slider * 2)°");
 
@@ -144,8 +143,8 @@ void dualfisheye2equirectangular(const Mat &front_img, const Mat &rear_img, Mat 
 				r = 2.0 * a / params->fov_front * params->radius_front;
 				t = atan2(p_z, p_y) + params->rot_front;
 
-				x = ((r * cos(t)) + 1) / 2 * height + params->x_off_front;
-				y = ((r * sin(t)) + 1) / 2 * height + params->y_off_front;
+				x = ((r * cos(t)) + 1) / 2 * height * params->x_off_front;
+				y = ((r * sin(t)) + 1) / 2 * height * params->y_off_front;
 				clip_borders(x, y, height);
 				
 				mapping_table.at<Vec5d>(j, i) = Vec5d(x, y, 0, 0, 1);
@@ -158,8 +157,8 @@ void dualfisheye2equirectangular(const Mat &front_img, const Mat &rear_img, Mat 
 				r = 2 * a / params->fov_front * params->radius_front;
 				t = atan2(p_z, p_y) + params->rot_front;
 
-				x = (r * cos(t) + 1) / 2 * height + params->x_off_front;
-				y = (r * sin(t) + 1) / 2 * height + params->y_off_front;
+				x = (r * cos(t) + 1) / 2 * height * params->x_off_front;
+				y = (r * sin(t) + 1) / 2 * height * params->y_off_front;
 				clip_borders(x, y, height);
 
 				bf = 1 - ((a - params->front_limit) / (params->blend_size * 2));
@@ -170,8 +169,8 @@ void dualfisheye2equirectangular(const Mat &front_img, const Mat &rear_img, Mat 
 				r = 2 * (M_PI - a) / params->fov_rear * params->radius_rear;
 				t = atan2(p_z, -p_y) + params->rot_rear;
 
-				x = (r * cos(t) + 1) / 2 * height + params->x_off_rear;
-				y = (r * sin(t) + 1) / 2 * height + params->y_off_rear;
+				x = (r * cos(t) + 1) / 2 * height * params->x_off_rear;
+				y = (r * sin(t) + 1) / 2 * height * params->y_off_rear;
 				clip_borders(x, y, height);
 
 				mte[2] = x;
@@ -185,8 +184,8 @@ void dualfisheye2equirectangular(const Mat &front_img, const Mat &rear_img, Mat 
 				r = 2.0 * (M_PI - a) / params->fov_rear * params->radius_rear;
 				t = atan2(p_z, -p_y) + params->rot_rear;
 
-				x = (r * cos(t) + 1) / 2 * height + params->x_off_rear;
-				y = (r * sin(t) + 1) / 2 * height + params->y_off_rear;
+				x = (r * cos(t) + 1) / 2 * height * params->x_off_rear;
+				y = (r * sin(t) + 1) / 2 * height * params->y_off_rear;
 				clip_borders(x, y, height);
 				
 				mapping_table.at<Vec5d>(j, i) = Vec5d(0, 0, x, y, 0);
@@ -396,8 +395,8 @@ int main(int argc, char **argv)
 	int height, width;
 	program_args args = {0};
 	calib_params params = {0};
-	calib_slider_params slider_params = {SLIDER_PX_OFF_DEFAULT, SLIDER_PX_OFF_DEFAULT, SLIDER_ROT_DEFAULT, SLIDER_RADIUS_DEFAULT, SLIDER_FOV_DEFAULT,
-										 SLIDER_PX_OFF_DEFAULT, SLIDER_PX_OFF_DEFAULT, SLIDER_ROT_DEFAULT, SLIDER_RADIUS_DEFAULT, SLIDER_FOV_DEFAULT};
+	calib_slider_params slider_params = {SLIDER_FACTOR_DEFAULT, SLIDER_FACTOR_DEFAULT, SLIDER_ROT_DEFAULT, SLIDER_FACTOR_DEFAULT, SLIDER_FOV_DEFAULT,
+										 SLIDER_FACTOR_DEFAULT, SLIDER_FACTOR_DEFAULT, SLIDER_ROT_DEFAULT, SLIDER_FACTOR_DEFAULT, SLIDER_FOV_DEFAULT};
 
 	args.params = &slider_params;
 	// parse arguments and set optional parameters
@@ -510,16 +509,16 @@ int main(int argc, char **argv)
 	cvResizeWindow(PREVIEW_WINDOW_NAME, 1440, 720);
 
 	// create slider
-	createTrackbar(SLIDER_X_OFF_NAME, CAMERA_FRONT_WINDOW_NAME, &(slider_params.x_off_front), SLIDER_PX_OFF_RANGE);
-	createTrackbar(SLIDER_Y_OFF_NAME, CAMERA_FRONT_WINDOW_NAME, &(slider_params.y_off_front), SLIDER_PX_OFF_RANGE);
+	createTrackbar(SLIDER_X_OFF_NAME, CAMERA_FRONT_WINDOW_NAME, &(slider_params.x_off_front), SLIDER_FACTOR_RANGE);
+	createTrackbar(SLIDER_Y_OFF_NAME, CAMERA_FRONT_WINDOW_NAME, &(slider_params.y_off_front), SLIDER_FACTOR_RANGE);
+	createTrackbar(SLIDER_RADIUS_NAME, CAMERA_FRONT_WINDOW_NAME, &(slider_params.radius_front), SLIDER_FACTOR_RANGE);
 	createTrackbar(SLIDER_ROT_NAME, CAMERA_FRONT_WINDOW_NAME, &(slider_params.rot_front), SLIDER_ROT_RANGE);
-	createTrackbar(SLIDER_RADIUS_NAME, CAMERA_FRONT_WINDOW_NAME, &(slider_params.radius_front), SLIDER_RADIUS_RANGE);
 	createTrackbar(SLIDER_FOV_NAME, CAMERA_FRONT_WINDOW_NAME, &(slider_params.fov_front), SLIDER_FOV_RANGE);
 
-	createTrackbar(SLIDER_X_OFF_NAME, CAMERA_REAR_WINDOW_NAME, &(slider_params.x_off_rear), SLIDER_PX_OFF_RANGE);
-	createTrackbar(SLIDER_Y_OFF_NAME, CAMERA_REAR_WINDOW_NAME, &(slider_params.y_off_rear), SLIDER_PX_OFF_RANGE);
+	createTrackbar(SLIDER_X_OFF_NAME, CAMERA_REAR_WINDOW_NAME, &(slider_params.x_off_rear), SLIDER_FACTOR_RANGE);
+	createTrackbar(SLIDER_Y_OFF_NAME, CAMERA_REAR_WINDOW_NAME, &(slider_params.y_off_rear), SLIDER_FACTOR_RANGE);
+	createTrackbar(SLIDER_RADIUS_NAME, CAMERA_REAR_WINDOW_NAME, &(slider_params.radius_rear), SLIDER_FACTOR_RANGE);
 	createTrackbar(SLIDER_ROT_NAME, CAMERA_REAR_WINDOW_NAME, &(slider_params.rot_rear), SLIDER_ROT_RANGE);
-	createTrackbar(SLIDER_RADIUS_NAME, CAMERA_REAR_WINDOW_NAME, &(slider_params.radius_rear), SLIDER_RADIUS_RANGE);
 	createTrackbar(SLIDER_FOV_NAME, CAMERA_REAR_WINDOW_NAME, &(slider_params.fov_rear), SLIDER_FOV_RANGE);
 
 	createTrackbar(SLIDER_BLEND_NAME, PREVIEW_WINDOW_NAME, &(slider_params.blend_size), SLIDER_BLEND_RANGE);
@@ -530,7 +529,7 @@ int main(int argc, char **argv)
 
 	Mat frame, frame_front, frame_rear, equiframe, circleframe_front, circleframe_rear;
 	CvPoint center_f, center_r, line_f, line_r;
-	int radius_f, radius_r, ch = 0, height_2 = height / 2;
+	int radius_f, radius_r, ch = 0, height_2 = height / 2, line_width = width / 1000 + 1;
 	bool pause = false;
 
 	// get first image and check if the file is empty
@@ -623,16 +622,16 @@ int main(int argc, char **argv)
 		circleframe_rear = frame_rear.clone();
 
 		// read slider values
-		params.x_off_front = slider_params.x_off_front - SLIDER_PX_OFF_DEFAULT;
-		params.y_off_front = slider_params.y_off_front - SLIDER_PX_OFF_DEFAULT;
+		params.x_off_front = slider_params.x_off_front / (double) SLIDER_FACTOR_DEFAULT;
+		params.y_off_front = slider_params.y_off_front / (double) SLIDER_FACTOR_DEFAULT;
 		params.rot_front = deg2rad((slider_params.rot_front - SLIDER_ROT_DEFAULT) / 10.);
-		params.radius_front = slider_params.radius_front / (double)SLIDER_RADIUS_DEFAULT;
+		params.radius_front = slider_params.radius_front / (double)SLIDER_FACTOR_DEFAULT;
 		params.fov_front = deg2rad(FOV_DEFAULT + slider_params.fov_front - SLIDER_FOV_DEFAULT);
 
-		params.x_off_rear = slider_params.x_off_rear - SLIDER_PX_OFF_DEFAULT;
-		params.y_off_rear = slider_params.y_off_rear - SLIDER_PX_OFF_DEFAULT;
+		params.x_off_rear = slider_params.x_off_rear / (double) SLIDER_FACTOR_DEFAULT;
+		params.y_off_rear = slider_params.y_off_rear / (double) SLIDER_FACTOR_DEFAULT;
 		params.rot_rear = deg2rad((slider_params.rot_rear - SLIDER_ROT_DEFAULT) / 10.);
-		params.radius_rear = slider_params.radius_rear / (double)SLIDER_RADIUS_DEFAULT;
+		params.radius_rear = slider_params.radius_rear / (double)SLIDER_FACTOR_DEFAULT;
 		params.fov_rear = deg2rad(FOV_DEFAULT + slider_params.fov_rear - SLIDER_FOV_DEFAULT);
 
 		params.blend_size = deg2rad(slider_params.blend_size);
@@ -640,10 +639,10 @@ int main(int argc, char **argv)
 		params.front_limit = M_PI_2 - params.blend_size;
 
 		// Center coordinates for preview
-		center_f.x = height_2 + params.x_off_front;
-		center_f.y = height_2 + params.y_off_front;
-		center_r.x = height_2 + params.x_off_rear;
-		center_r.y = height_2 + params.y_off_rear;
+		center_f.x = height_2 * params.x_off_front;
+		center_f.y = height_2 * params.y_off_front;
+		center_r.x = height_2 * params.x_off_rear;
+		center_r.y = height_2 * params.y_off_rear;
 
 		radius_f = height_2 * params.radius_front;
 		radius_r = height_2 * params.radius_rear;
@@ -653,10 +652,10 @@ int main(int argc, char **argv)
 		line_r.y = center_r.y + radius_r * sin(params.rot_rear - M_PI_2);
 
 		// draw circles and lines
-		circle(circleframe_front, center_f, radius_f, Scalar(0, 255, 0), 2, 0, 0);
-		circle(circleframe_rear, center_r, radius_r, Scalar(0, 0, 255), 2, 0, 0);
-		line(circleframe_front, center_f, line_f, Scalar(0, 255, 0), 2);
-		line(circleframe_rear, center_r, line_r, Scalar(0, 0, 255), 2);
+		circle(circleframe_front, center_f, radius_f, Scalar(0, 255, 0), line_width, 0, 0);
+		circle(circleframe_rear, center_r, radius_r, Scalar(0, 0, 255), line_width, 0, 0);
+		line(circleframe_front, center_f, line_f, Scalar(0, 255, 0), line_width);
+		line(circleframe_rear, center_r, line_r, Scalar(0, 0, 255), line_width);
 		imshow(CAMERA_FRONT_WINDOW_NAME, circleframe_front);
 		imshow(CAMERA_REAR_WINDOW_NAME, circleframe_rear);
 

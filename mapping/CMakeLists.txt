@@ -11,10 +11,14 @@ endif()
 
 include_directories(${OpenCV_INCLUDE_DIRS})
 
-set(CMAKE_CXX_FLAGS "-Wall")
-set(CMAKE_CXX_FLAGS_DEBUG "-g -O3 -DDEBUG")
+set(CMAKE_CXX_FLAGS_DEBUG "-Wall -g -DDEBUG")
 set(CMAKE_CUDA_FLAGS_DEBUG "-DDEBUG")
 set(CMAKE_CXX_FLAGS_RELEASE "-O3")
+
+set(TIMES OFF CACHE BOOL "Print frametimes in terminal")
+if (TIMES)
+	set(CMAKE_CXX_FLAGS "-DPRINT_TIMES")
+endif()
 
 set(CPU_EXE dfe2eqr)
 set(CUDA_EXE dfe2eqr-cuda)

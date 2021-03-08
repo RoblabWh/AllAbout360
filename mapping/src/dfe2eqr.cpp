@@ -1,4 +1,4 @@
-#include <stdio.h>
+#include <iostream>
 #include <opencv2/opencv.hpp>
 #include <fstream>
 #ifdef _OPENMP
@@ -77,7 +77,7 @@ void read_mapping_file(string path, cv::Mat &mapping_table)
  * @param vid_path_1 path to first or only video input (file or device)
  * @param vid_path_2 path to second video input
  */
-void parse_args(int argc, char **argv, string &map_file_path, string &vid_path_1, string &vid_path_2)
+void parse_args(int argc, char **argv, string &map_file_path, string &vid_path_1, string &vid_path_2, string &out_path)
 {
 	// check for arguments
 	if (argc < 3 || argc > 6)
@@ -90,7 +90,6 @@ void parse_args(int argc, char **argv, string &map_file_path, string &vid_path_1
 		printf("\t%s example_front.mp4 example_rear.mp4 mapping-table.txt\n", argv[0]);
 		exit(EXIT_FAILURE);
 	}
-	//TODO output file
 
 	// read arguments
 	if (argc == 3)
@@ -99,12 +98,28 @@ void parse_args(int argc, char **argv, string &map_file_path, string &vid_path_1
 		map_file_path = argv[2];
 		cout << "Processing video file \"" << vid_path_1 << "\" with mapping table \"" << map_file_path << "\"." << endl;
 	}
-	else
+	else if (argc == 4)
 	{
 		vid_path_1 = argv[1];
 		vid_path_2 = argv[2];
 		map_file_path = argv[3];
 		cout << "Processing video files \"" << vid_path_1 << "\" and \"" << vid_path_2 << "\" with mapping table \"" << map_file_path << "\"." << endl;
+	}
+	//TODO better error checking and parsing
+	else if (argc == 5)
+	{
+		vid_path_1 = argv[1];
+		map_file_path = argv[2];
+		cout << "Processing video file \"" << vid_path_1 << "\" with mapping table \"" << map_file_path << "\"." << endl;
+		out_path = argv[4];
+	}
+	else if (argc == 6)
+	{
+		vid_path_1 = argv[1];
+		vid_path_2 = argv[2];
+		map_file_path = argv[3];
+		cout << "Processing video files \"" << vid_path_1 << "\" and \"" << vid_path_2 << "\" with mapping table \"" << map_file_path << "\"." << endl;
+		out_path = argv[5];
 	}
 }
 
@@ -128,7 +143,6 @@ void remap(const cv::Mat &in, const cv::Mat &map, cv::Mat &out)
 		}
 	}
 }
-
 
 /**
  * @brief Remaps inputs to output based on mapping table
@@ -154,10 +168,10 @@ void remap(const cv::Mat &in_1, const cv::Mat &in_2, const cv::Mat &map, cv::Mat
 
 int main(int argc, char **argv)
 {
-	string map_file_path, vid_path_1, vid_path_2;
+	string map_file_path, vid_path_1, vid_path_2, out_path;
 	cv::Mat mapping_table;
 
-	parse_args(argc, argv, map_file_path, vid_path_1, vid_path_2);
+	parse_args(argc, argv, map_file_path, vid_path_1, vid_path_2, out_path);
 
 	read_mapping_file(map_file_path, mapping_table);
 
@@ -172,8 +186,8 @@ int main(int argc, char **argv)
 	cv::namedWindow(WINDOW_NAME, CV_WINDOW_KEEPRATIO | CV_WINDOW_NORMAL);
 	cv::resizeWindow(WINDOW_NAME, 1440, 720);
 
-	// TODO do real implementation
-	// cv::VideoWriter wrt("test.mp4", cap.get(cv::CAP_PROP_FOURCC), cap.get(cv::CAP_PROP_FPS), cv::Size(cap.get(cv::CAP_PROP_FRAME_WIDTH), cap.get(cv::CAP_PROP_FRAME_HEIGHT)));
+	//TODO do better implementation
+	cv::VideoWriter wrt;
 
 	if (vid_path_2.empty()) // one input
 	{
@@ -196,6 +210,9 @@ int main(int argc, char **argv)
 		// init output mat
 		equiframe.create(mapping_table.rows, mapping_table.cols, frame_1.type());
 
+		if (!out_path.empty())
+			wrt.open(out_path, cap_1.get(cv::CAP_PROP_FOURCC), cap_1.get(cv::CAP_PROP_FPS), cv::Size(mapping_table.cols, mapping_table.rows));
+
 		// do mapping
 		while (cv::waitKey(1) != 27)
 		{
@@ -207,7 +224,8 @@ int main(int argc, char **argv)
 			TIMES(preview_start = std::chrono::steady_clock::now();)
 			// Auf den Schirm Spoki
 			imshow(WINDOW_NAME, equiframe);
-			// wrt << equiframe;
+			if (wrt.isOpened())
+				wrt << equiframe;
 			TIMES(preview_end = std::chrono::steady_clock::now();
 				  preview_sum += std::chrono::duration_cast<std::chrono::duration<double>>(preview_end - preview_start).count();)
 
@@ -258,6 +276,9 @@ int main(int argc, char **argv)
 		// init output mat
 		equiframe.create(mapping_table.rows, mapping_table.cols, frame_1.type());
 
+		if (!out_path.empty())
+			wrt.open(out_path, cap_1.get(cv::CAP_PROP_FOURCC), cap_1.get(cv::CAP_PROP_FPS), cv::Size(mapping_table.cols, mapping_table.rows));
+
 		while (cv::waitKey(1) != 27)
 		{
 			TIMES(mapping_start = std::chrono::steady_clock::now();)
@@ -268,7 +289,8 @@ int main(int argc, char **argv)
 			TIMES(preview_start = std::chrono::steady_clock::now();)
 			// Auf den Schirm Spoki
 			imshow(WINDOW_NAME, equiframe);
-			// wrt << equiframe;
+			if (wrt.isOpened())
+				wrt << equiframe;
 			TIMES(preview_end = std::chrono::steady_clock::now();
 				  preview_sum += std::chrono::duration_cast<std::chrono::duration<double>>(preview_end - preview_start).count();)
 

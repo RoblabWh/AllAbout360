@@ -530,7 +530,7 @@ int main(int argc, char **argv)
 	Mat frame, frame_front, frame_rear, equiframe, circleframe_front, circleframe_rear;
 	CvPoint center_f, center_r, line_f, line_r;
 	int radius_f, radius_r, ch = 0, height_2 = height / 2, line_width = width / 1000 + 1;
-	bool pause = false;
+	bool pause = false, video_input = true;
 
 	// get first image and check if the file is empty
 	if (args.is_single_input)
@@ -545,6 +545,8 @@ int main(int argc, char **argv)
 		// split frame in front and rear
 		frame_front = frame(Rect(0, 0, frame.rows, frame.rows));
 		frame_rear = frame(Rect(frame.rows, 0, frame.rows, frame.rows));
+
+		if (!cap.grab()) video_input = false;
 	}
 	else
 	{
@@ -560,6 +562,7 @@ int main(int argc, char **argv)
 			printf("Rear video is empty.\n");
 			return -1;
 		}
+		if (!cap_front.grab()) video_input = false;
 	}
 	// init output image
 	equiframe.create(height, width, frame_front.type());
@@ -574,7 +577,7 @@ int main(int argc, char **argv)
 	while (ch != 27 && ch != 10 && ch != 13)
 	{
 		TIMES(start = chrono::steady_clock::now());
-		if (!pause)
+		if (!pause && video_input)
 		{
 			if (args.is_single_input)
 			{

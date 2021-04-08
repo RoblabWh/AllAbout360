@@ -1,38 +1,85 @@
 cmake_minimum_required(VERSION 3.9)
 project(dfe2eqr_mapping LANGUAGES CXX)
 
-find_package(OpenCV 3 REQUIRED)
-find_package(OpenMP REQUIRED)
-find_package(CUDA)
+include(CheckLanguage)
 
-if(NOT CMAKE_BUILD_TYPE)
-	set(CMAKE_BUILD_TYPE Release)
+# find needed and optional packages
+find_package(OpenCV 4 QUIET)
+if (NOT OpenCV_FOUND)
+	find_package(OpenCV 3 REQUIRED)
+endif()
+find_package(OpenMP)
+check_language(CUDA)
+if(CMAKE_CUDA_COMPILER)
+	enable_language(CUDA)
 endif()
 
 include_directories(${OpenCV_INCLUDE_DIRS})
 
+# set compile options
+set(CMAKE_CXX_FLAGS "-std=gnu++17")
 set(CMAKE_CXX_FLAGS_DEBUG "-Wall -g -DDEBUG")
 set(CMAKE_CUDA_FLAGS_DEBUG "-DDEBUG")
 set(CMAKE_CXX_FLAGS_RELEASE "-O3")
 
-set(TIMES OFF CACHE BOOL "Print frametimes in terminal")
-if (TIMES)
-	set(CMAKE_CXX_FLAGS "-DPRINT_TIMES")
+#----------------------------------------------------------------------------------#
+# Functions to compile with different frameworks
+#----------------------------------------------------------------------------------#
+function(compile_with_openmp target_name)
+	add_executable(${target_name} src/dfe2eqr.cpp)
+	target_link_libraries(${target_name} ${OpenCV_LIBS})
+endfunction()
+
+function(compile_with_cuda target_name)
+	add_executable(${target_name} src/dfe2eqr.cpp src/mapping.h src/mapping.cu)
+	target_link_libraries(${target_name} ${OpenCV_LIBS})
+endfunction()
+
+function(compile_with_opencl target_name)
+	message("OpenCL is currently not supported.")
+	return()
+endfunction()
+
+#----------------------------------------------------------------------------------#
+# Configure different compilation settings
+#----------------------------------------------------------------------------------#
+if(NOT CMAKE_BUILD_TYPE)
+	set(CMAKE_BUILD_TYPE Release)
 endif()
 
-set(CPU_EXE dfe2eqr)
-set(CUDA_EXE dfe2eqr-cuda)
+option(PRINT_TIMES "Print frametimes" NO)
+if (${PRINT_TIMES})
+	add_compile_options(-DPRINT_TIMES)
+endif()
 
-add_executable(${CPU_EXE} src/${CPU_EXE}.cpp)
-if(OpenMP_CXX_FOUND)
-	target_link_libraries(${CPU_EXE} PUBLIC OpenMP::OpenMP_CXX ${OpenCV_LIBS})
+set(PARALLELIZATION_FRAMEWORK DEFAULT CACHE STRING "Parallelization framework to compile with.")
+string(TOUPPER ${PARALLELIZATION_FRAMEWORK} PARALLELIZATION_FRAMEWORK)
+
+# auto select best framework
+if(${PARALLELIZATION_FRAMEWORK} STREQUAL "DEFAULT")
+	if(CMAKE_CUDA_COMPILER)
+		set(PARALLELIZATION_FRAMEWORK "CUDA")
+	else()
+		set(PARALLELIZATION_FRAMEWORK "OMP")
+	endif()
+endif()
+
+# print configuration
+message("\nCMake build type: " ${CMAKE_BUILD_TYPE}
+		"\nParallelization framework: " ${PARALLELIZATION_FRAMEWORK}
+		"\nPrint times: " ${PRINT_TIMES} "\n")
+
+# create selected targets
+if(${PARALLELIZATION_FRAMEWORK} STREQUAL "ALL")
+	compile_with_openmp(${PROJECT_NAME}_omp)
+	compile_with_cuda(${PROJECT_NAME}_cuda)
+	# compile_with_opencl(${PROJECT_NAME}_cl)
+elseif(${PARALLELIZATION_FRAMEWORK} STREQUAL "OPENMP" OR ${PARALLELIZATION_FRAMEWORK} STREQUAL "OMP")
+	compile_with_openmp(${PROJECT_NAME})
+elseif(${PARALLELIZATION_FRAMEWORK} STREQUAL "CUDA")
+	compile_with_cuda(${PROJECT_NAME})
+elseif(${PARALLELIZATION_FRAMEWORK} STREQUAL "OPENCL" OR ${PARALLELIZATION_FRAMEWORK} STREQUAL "CL")
+	compile_with_opencl(${PROJECT_NAME})
 else()
-	target_link_libraries(${CPU_EXE} ${OpenCV_LIBS})
+	message(${PARALLELIZATION_FRAMEWORK} " is not supported.")
 endif()
-
-enable_language(CUDA)
-if(CMAKE_CUDA_COMPILER)
-	add_executable(${CUDA_EXE} src/${CUDA_EXE}.cpp src/mapping.cu src/mapping.h)
-	target_link_libraries(${CUDA_EXE} ${OpenCV_LIBS})
-endif()
-

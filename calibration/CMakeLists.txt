@@ -1,7 +1,10 @@
 cmake_minimum_required(VERSION 3.9)
 project(dfe2eqr_calibration LANGUAGES CXX)
 
-find_package(OpenCV 3 REQUIRED)
+find_package(OpenCV 4 QUIET)
+if (NOT OpenCV_FOUND)
+	find_package(OpenCV 3 REQUIRED)
+endif()
 find_package(OpenMP)
 
 if(NOT CMAKE_BUILD_TYPE)
@@ -15,7 +18,7 @@ set(CMAKE_CXX_FLAGS_RELEASE "-O3")
 
 set(TIMES OFF CACHE BOOL "Print frametimes in terminal")
 if (TIMES)
-	set(CMAKE_CXX_FLAGS "-DPRINT_TIMES")
+	add_compile_options(-DPRINT_TIMES)
 endif()
 
 set(EXE dfe2eqr-calib)

@@ -50,9 +50,9 @@ const char HELP_DIALOG[] = " (<file> | <file_front> <file_rear>) [--resolution -
 
 enum mapping_table_format
 {
-	FULL,
-	OPENCV,
-	INTEGER
+	FULL, // double[x1, y1, x2, y2, blend factor]
+	OPENCV, // double[x, y]
+	INTEGER // int[x, y]
 };
 
 /**
@@ -201,7 +201,7 @@ void dualfisheye2equirectangular(const Mat &front_img, const Mat &rear_img, Mat 
 // {
 // 	Mat equi_grey_img;
 // 	cvtColor(equi_img, equi_grey_img, CV_BGR2GRAY);
-
+//
 // 	// name pattern: lbl = left border left
 // 	Mat lbl = equi_grey_img(Rect(width / 8, 0, width / 8, height));
 // 	Mat lbr = equi_grey_img(Rect(width / 4, 0, width / 8, height));
@@ -212,7 +212,7 @@ void dualfisheye2equirectangular(const Mat &front_img, const Mat &rear_img, Mat 
 // 	vector<DMatch> lb_dm, rb_dm;
 // 	Mat lbl_pre, lbr_pre, rbl_pre, rbr_pre;
 // 	Mat lb_pre, rb_pre;
-
+//
 // 	Mat marker_front = front_img.clone(), marker_rear = rear_img.clone();
 // 	Mat feat_front_img = front_img.clone(), feat_rear_img = rear_img.clone();
 // 	Mat desc_front, desc_rear;
@@ -224,12 +224,12 @@ void dualfisheye2equirectangular(const Mat &front_img, const Mat &rear_img, Mat 
 // 	Ptr<ORB> orb = ORB::create(100);
 // 	Ptr<BFMatcher> bfm = BFMatcher::create();
 // 	std::vector<DMatch> dm;
-
+//
 // 	namedWindow("lb", cv::WINDOW_NORMAL | cv::WINDOW_KEEPRATIO);
 // 	namedWindow("rb", cv::WINDOW_NORMAL | cv::WINDOW_KEEPRATIO);
 // 	cvResizeWindow("lb", 1920 / 4, 1000);
 // 	cvResizeWindow("rb", 1920 / 4, 1000);
-
+//
 // 	while (true)
 // 	{
 // 		// FAST(feat_front_img, kp_front, fast_thresh);
@@ -243,7 +243,7 @@ void dualfisheye2equirectangular(const Mat &front_img, const Mat &rear_img, Mat 
 // 		// bfm->match(desc_front, desc_rear, dm);
 // 		// drawMatches(front_img, kp_front, rear_img, kp_rear, dm, equi_img, Scalar(0, 0, 255), Scalar(255, 0, 0));
 // 		// imshow("Matches", equi_img);
-
+//
 // 		orb->detectAndCompute(lbl, noArray(), lbl_kp, lbl_des);
 // 		orb->detectAndCompute(lbr, noArray(), lbr_kp, lbr_des);
 // 		orb->detectAndCompute(rbl, noArray(), rbl_kp, rbl_des);
@@ -256,14 +256,14 @@ void dualfisheye2equirectangular(const Mat &front_img, const Mat &rear_img, Mat 
 // 		imshow("lbr", lbr_pre);
 // 		imshow("rbl", rbl_pre);
 // 		imshow("rbr", rbr_pre);
-
+//
 // 		bfm->match(lbl_des, lbr_des, lb_dm);
 // 		bfm->match(rbl_des, rbr_des, rb_dm);
 // 		drawMatches(lbl, lbl_kp, lbr, lbr_kp, lb_dm, lb_pre, Scalar(0, 0, 255), Scalar(255, 0, 0));
 // 		drawMatches(rbl, rbl_kp, rbr, rbr_kp, rb_dm, rb_pre, Scalar(0, 0, 255), Scalar(255, 0, 0));
 // 		imshow("lb", lb_pre);
 // 		imshow("rb", rb_pre);
-
+//
 // 		waitKey(10);
 // 	}
 // }
@@ -340,7 +340,7 @@ void parse_args(int argc, char **argv, program_args *args)
 				cout << "Codec needs to be exactly four characters long." << endl;
 				exit(1);
 			}
-			args->fourcc = CV_FOURCC(argv[i][0], argv[i][1], argv[i][2], argv[i][3]);
+			args->fourcc = cv::VideoWriter::fourcc(argv[i][0], argv[i][1], argv[i][2], argv[i][3]);
 			args->fourcc_str = argv[i];
 			args->has_fourcc = true;
 		}
@@ -399,114 +399,108 @@ int main(int argc, char **argv)
 										 SLIDER_FACTOR_DEFAULT, SLIDER_FACTOR_DEFAULT, SLIDER_ROT_DEFAULT, SLIDER_FACTOR_DEFAULT, SLIDER_FOV_DEFAULT};
 
 	args.params = &slider_params;
+
 	// parse arguments and set optional parameters
 	parse_args(argc, argv, &args);
 
 	VideoCapture cap, cap_front, cap_rear;
 	if (args.is_single_input)
 	{
+		// TODO sets the caps but cameras don't change
+		// set optional fps for cameras
+		if (args.has_fps)
+		{
+			if (!cap.set(CAP_PROP_FPS, args.fps))
+				printf("Couldn't set FPS to %d\n", args.fps);
+		}
+		// set optional codec for cameras
+		if (args.has_fourcc)
+		{
+			if (!cap.set(CV_CAP_PROP_FOURCC, static_cast<double>(args.fourcc)) && cap.get(CV_CAP_PROP_FOURCC) == args.fourcc)
+				printf("Couldn't set codec to %s\n", args.fourcc_str);
+			DBG(cout << args.fourcc_str << endl);
+		}
+		// set optional resolution for cameras
+		if (args.has_resolution)
+		{
+			// try to set given resolution and check success
+			if (!cap.set(CAP_PROP_FRAME_WIDTH, width))
+				printf("Couldn't set width to %d\n", width);
+			if (!cap.set(CAP_PROP_FRAME_HEIGHT, height))
+				printf("Couldn't set heigth to %d\n", height);
+		}
+
 		// try to open video
 		cap.open(args.file);
 		if (!cap.isOpened())
 		{
 			printf("Could not open video %s\n", args.file);
-			return -1;
+			return EXIT_FAILURE;
 		}
-
-		//TODO sets the caps but cameras don't change
-		// // set optional fps for cameras
-		// if (args.has_fps)
-		// {
-		// 	if (!cap.set(CAP_PROP_FPS, args.fps))
-		// 		printf("Couldn't set FPS to %d\n", args.fps);
-		// }
-		// // set optional codec for cameras
-		// if (args.has_fourcc)
-		// {
-		// 	if (!cap.set(CV_CAP_PROP_FOURCC, static_cast<double>(args.fourcc)) && cap.get(CV_CAP_PROP_FOURCC) == args.fourcc)
-		// 		printf("Couldn't set codec to %s\n", args.fourcc_str);
-		// 	DBG(cout << args.fourcc_str << endl);
-		// }
-		// // set optional resolution for cameras
-		// if (args.has_resolution)
-		// {
-		// 	width = args.width;
-		// 	height = args.height;
-		// 	// try to set given resolution and check success
-		// 	if (!cap.set(CAP_PROP_FRAME_WIDTH, width))
-		// 		printf("Couldn't set width to %d\n", width);
-		// 	if (!cap.set(CAP_PROP_FRAME_HEIGHT, height))
-		// 		printf("Couldn't set heigth to %d\n", height);
-		// }
-		// else
-		// {
 		width = cap.get(CAP_PROP_FRAME_WIDTH);
 		height = cap.get(CAP_PROP_FRAME_HEIGHT);
-		// }
 	}
 	else
 	{
+		// TODO sets the caps but cameras don't change
+		if (args.has_fps)
+		{
+			if (!cap_front.set(CAP_PROP_FPS, args.fps))
+				printf("Couldn't set front FPS to %d\n", args.fps);
+			if (!cap_rear.set(CAP_PROP_FPS, args.fps))
+				printf("Couldn't set rear FPS to %d\n", args.fps);
+		}
+		if (args.has_fourcc)
+		{
+			if (!cap_front.set(CAP_PROP_FOURCC, static_cast<double>(args.fourcc)))
+				printf("Couldn't set front codec to %s\n", args.fourcc_str);
+			if (!cap_rear.set(CAP_PROP_FOURCC, static_cast<double>(args.fourcc)))
+				printf("Couldn't set rear codec to %s\n", args.fourcc_str);
+		}
+		if (args.has_resolution)
+		{
+			width = args.width;
+			height = args.height;
+			// try to set given resolution and check success
+			if (!cap_front.set(CAP_PROP_FRAME_WIDTH, height))
+				printf("Couldn't set front width to %d\n", height);
+			if (!cap_front.set(CAP_PROP_FRAME_HEIGHT, height))
+				printf("Couldn't set front heigth to %d\n", height);
+			if (!cap_rear.set(CAP_PROP_FRAME_WIDTH, height))
+				printf("Couldn't set rear width to %d\n", height);
+			if (!cap_rear.set(CAP_PROP_FRAME_HEIGHT, height))
+				printf("Couldn't set rear heigth to %d\n", height);
+		}
+
 		cap_front.open(args.file_front);
 		cap_rear.open(args.file_rear);
 		if (!cap_front.isOpened())
 		{
 			printf("Could not open front video %s\n", args.file_front);
-			return -1;
+			return EXIT_FAILURE;
 		}
 		if (!cap_rear.isOpened())
 		{
 			printf("Could not open rear video %s\n", args.file_rear);
-			return -1;
+			return EXIT_FAILURE;
 		}
 
-		//TODO sets the caps but cameras don't change
-		// if (args.has_fps)
-		// {
-		// 	if (!cap_front.set(CAP_PROP_FPS, args.fps))
-		// 		printf("Couldn't set front FPS to %d\n", args.fps);
-		// 	if (!cap_rear.set(CAP_PROP_FPS, args.fps))
-		// 		printf("Couldn't set rear FPS to %d\n", args.fps);
-		// }
-		// if (args.has_fourcc)
-		// {
-		// 	if (!cap_front.set(CAP_PROP_FOURCC, static_cast<double>(args.fourcc)))
-		// 		printf("Couldn't set front codec to %s\n", args.fourcc_str);
-		// 	if (!cap_rear.set(CAP_PROP_FOURCC, static_cast<double>(args.fourcc)))
-		// 		printf("Couldn't set rear codec to %s\n", args.fourcc_str);
-		// }
-		// if (args.has_resolution)
-		// {
-		// 	width = args.width;
-		// 	height = args.height;
-		// 	// try to set given resolution and check success
-		// 	if (!cap_front.set(CAP_PROP_FRAME_WIDTH, height))
-		// 		printf("Couldn't set front width to %d\n", height);
-		// 	if (!cap_front.set(CAP_PROP_FRAME_HEIGHT, height))
-		// 		printf("Couldn't set front heigth to %d\n", height);
-		// 	if (!cap_rear.set(CAP_PROP_FRAME_WIDTH, height))
-		// 		printf("Couldn't set rear width to %d\n", height);
-		// 	if (!cap_rear.set(CAP_PROP_FRAME_HEIGHT, height))
-		// 		printf("Couldn't set rear heigth to %d\n", height);
-		// }
-		// else
-		// {
 		if (cap_front.get(CAP_PROP_FRAME_WIDTH) != cap_rear.get(CAP_PROP_FRAME_WIDTH) || cap_front.get(CAP_PROP_FRAME_HEIGHT) != cap_rear.get(CAP_PROP_FRAME_HEIGHT))
 		{
 			printf("Resolution of the front and rear video differ.\n");
-			return -1;
+			return EXIT_FAILURE;
 		}
 		width = cap_front.get(CAP_PROP_FRAME_WIDTH) * 2;
 		height = cap_front.get(CAP_PROP_FRAME_HEIGHT);
-		// }
 	}
 
 	// create windows
-	namedWindow(CAMERA_FRONT_WINDOW_NAME, WINDOW_NORMAL | CV_WINDOW_KEEPRATIO);
-	namedWindow(CAMERA_REAR_WINDOW_NAME, WINDOW_NORMAL | CV_WINDOW_KEEPRATIO);
-	namedWindow(PREVIEW_WINDOW_NAME, WINDOW_NORMAL | CV_WINDOW_KEEPRATIO);
-	cvResizeWindow(CAMERA_FRONT_WINDOW_NAME, 720, 720);
-	cvResizeWindow(CAMERA_REAR_WINDOW_NAME, 720, 720);
-	cvResizeWindow(PREVIEW_WINDOW_NAME, 1440, 720);
+	namedWindow(CAMERA_FRONT_WINDOW_NAME, WINDOW_NORMAL | WINDOW_KEEPRATIO);
+	namedWindow(CAMERA_REAR_WINDOW_NAME, WINDOW_NORMAL | WINDOW_KEEPRATIO);
+	namedWindow(PREVIEW_WINDOW_NAME, WINDOW_NORMAL | WINDOW_KEEPRATIO);
+	resizeWindow(CAMERA_FRONT_WINDOW_NAME, 720, 720);
+	resizeWindow(CAMERA_REAR_WINDOW_NAME, 720, 720);
+	resizeWindow(PREVIEW_WINDOW_NAME, 1440, 720);
 
 	// create slider
 	createTrackbar(SLIDER_X_OFF_NAME, CAMERA_FRONT_WINDOW_NAME, &(slider_params.x_off_front), SLIDER_FACTOR_RANGE);
@@ -524,11 +518,11 @@ int main(int argc, char **argv)
 	createTrackbar(SLIDER_BLEND_NAME, PREVIEW_WINDOW_NAME, &(slider_params.blend_size), SLIDER_BLEND_RANGE);
 
 	//TODO optimize button
-	int optimization = 0;
-	createTrackbar("optimze", PREVIEW_WINDOW_NAME, &optimization, 1);
+	// int optimization = 0;
+	// createTrackbar("optimze", PREVIEW_WINDOW_NAME, &optimization, 1);
 
-	Mat frame, frame_front, frame_rear, equiframe, circleframe_front, circleframe_rear;
-	CvPoint center_f, center_r, line_f, line_r;
+	Mat frame, frame_front, frame_rear, equiframe, drawframe_front, drawframe_rear;
+	Point center_f, center_r, line_f, line_r;
 	int radius_f, radius_r, ch = 0, height_2 = height / 2, line_width = width / 1000 + 1;
 	bool pause = false, video_input = true;
 
@@ -539,7 +533,7 @@ int main(int argc, char **argv)
 		if (frame.empty())
 		{
 			printf("Video is empty.\n");
-			return -1;
+			return EXIT_FAILURE;
 		}
 		DBG(cout << "width: " << frame.cols << " height: " << frame.rows << endl);
 		// split frame in front and rear
@@ -554,13 +548,13 @@ int main(int argc, char **argv)
 		if (frame_front.empty())
 		{
 			printf("Front video is empty.\n");
-			return -1;
+			return EXIT_FAILURE;
 		}
 		cap_rear >> frame_rear;
 		if (frame_rear.empty())
 		{
 			printf("Rear video is empty.\n");
-			return -1;
+			return EXIT_FAILURE;
 		}
 		if (!cap_front.grab()) video_input = false;
 	}
@@ -621,8 +615,8 @@ int main(int argc, char **argv)
 			}
 		}
 		// clear circles
-		circleframe_front = frame_front.clone();
-		circleframe_rear = frame_rear.clone();
+		drawframe_front = frame_front.clone();
+		drawframe_rear = frame_rear.clone();
 
 		// read slider values
 		params.x_off_front = slider_params.x_off_front / (double) SLIDER_FACTOR_DEFAULT;
@@ -655,12 +649,12 @@ int main(int argc, char **argv)
 		line_r.y = center_r.y + radius_r * sin(params.rot_rear - M_PI_2);
 
 		// draw circles and lines
-		circle(circleframe_front, center_f, radius_f, Scalar(0, 255, 0), line_width, 0, 0);
-		circle(circleframe_rear, center_r, radius_r, Scalar(0, 0, 255), line_width, 0, 0);
-		line(circleframe_front, center_f, line_f, Scalar(0, 255, 0), line_width);
-		line(circleframe_rear, center_r, line_r, Scalar(0, 0, 255), line_width);
-		imshow(CAMERA_FRONT_WINDOW_NAME, circleframe_front);
-		imshow(CAMERA_REAR_WINDOW_NAME, circleframe_rear);
+		circle(drawframe_front, center_f, radius_f, Scalar(0, 255, 0), line_width, 0, 0);
+		circle(drawframe_rear, center_r, radius_r, Scalar(0, 0, 255), line_width, 0, 0);
+		line(drawframe_front, center_f, line_f, Scalar(0, 255, 0), line_width);
+		line(drawframe_rear, center_r, line_r, Scalar(0, 0, 255), line_width);
+		imshow(CAMERA_FRONT_WINDOW_NAME, drawframe_front);
+		imshow(CAMERA_REAR_WINDOW_NAME, drawframe_rear);
 
 		// mapping
 		dualfisheye2equirectangular(frame_front, frame_rear, equiframe, width, height, &params, mapping_table);

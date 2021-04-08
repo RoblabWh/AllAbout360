@@ -1,8 +1,26 @@
-#ifndef CUDA_MAPPING_H
-#define CUDA_MAPPING_H
+#ifndef MAPPING_H
+#define MAPPING_H
 
-#include "vector"
+#ifdef DEBUG
+#define DBG(E...) E
+#else
+#define DBG(E...)
+#endif
+#ifdef PRINT_TIMES
+#include <chrono>
+#define TIMES(E...) E
+#else
+#define TIMES(E...)
+#endif
 
+enum interpolation_type
+{
+	NEAREST_NEIGHBOUR,
+	BILINEAR,
+	BICUBIC
+};
+
+#ifdef CUDA
 /**
  * @brief Allocates device memory for the mappings and input and output images.
  * 
@@ -11,40 +29,17 @@
  * @param width of image in pixel
  * @param height of image in pixel
  */
-void init_device_memory(const std::vector<unsigned short> &mapx, const std::vector<unsigned short> &mapy,
-                       unsigned short width, unsigned short height);
-
-/**
- * @brief Allocates device memory for the mappings and input and output images.
- * 
- * @param mapx mapping of the x indices
- * @param mapy mapping of the y indices
- * @param width of image in pixel
- * @param height of image in pixel
- */
-void init_device_memory(const unsigned short *mapx, const unsigned short *mapy, unsigned short width, unsigned short height);
-
+void init_device_memory(const void *map, unsigned short width, unsigned short height);
 
 /**
  * @brief Frees the device memory.
  */
 void free_device_memory();
 
-/**
- * @brief Maps the given image based on the given mappingfile.
- * 
- * @param in_img Dualfisheye image
- * @param out_img Equirectangular image
- */
-void map(const unsigned char *in_img, unsigned char *out_img);
-
-/**
- * @brief Maps the given images based on the given mappingfile.
- * 
- * @param in_img_front front fisheye image
- * @param in_img_rear raer fisheye image
- * @param out_img Equirectangular image
- */
-void map(const unsigned char *in_img_front, const unsigned char *in_img_rear, unsigned char *out_img);
+void cuda_remap_nn(const unsigned char *in, unsigned char *out);
+void cuda_remap_li(const unsigned char *in, unsigned char *out);
+void cuda_remap_nn(const unsigned char *in_1, const unsigned char *in_2, unsigned char *out);
+void cuda_remap_li(const unsigned char *in_1, const unsigned char *in_2, unsigned char *out);
+#endif
 
 #endif

@@ -4,13 +4,35 @@
 #ifdef _OPENMP
 #include <omp.h>
 #endif
+#ifdef WITH_OPENCL
+#include <CL/cl.hpp>
+#include "mapping.cl.h"
+#ifdef DEBUG
+cl_int _cl_error = 0;
+#define CL_ERROR_CHECK(FNC_CALL) _cl_error = FNC_CALL; if(_cl_error != 0) { printf("%s: %s\n",  #FNC_CALL, clGetErrorString(_cl_error)); exit(EXIT_FAILURE); }
+#else
+#define CL_ERROR_CHECK(FNC_CALL)
+#endif
+#endif
 #include "mapping.h"
-
-// g++ -O2 -fopenmp -o dfe2eqr dfe2eqr.cpp  `pkg-config --cflags opencv` `pkg-config --libs opencv`
 
 using namespace std;
 
 const string WINDOW_NAME = "Output";
+
+#ifdef WITH_OPENCL
+const size_t LOCAL_SIZE = 1024;
+cl::Context cl_ctxt;
+cl::CommandQueue cl_cmdq;
+cl::Program cl_prog;
+cl::Kernel cl_k;
+cl::Buffer cl_map;
+cl::Buffer cl_in_1;
+cl::Buffer cl_in_2;
+cl::Buffer cl_out;
+cl::NDRange cl_local_size(LOCAL_SIZE);
+cl::NDRange cl_global_size;
+#endif
 
 struct program_args
 {
@@ -43,7 +65,7 @@ void read_mapping_file(string path, cv::Mat &mapping_table)
 		cerr << "Couldn't read resolution from file \"" << path << "\"." << endl;
 		exit(EXIT_FAILURE);
 	}
-	DBG(cout << "mappingtable size:" << width << 'x' << height << endl;)
+	DBG(cout << "mappingtable size: " << width << 'x' << height << endl;)
 	mapping_table.create(height, width, CV_64FC(14)); //TODO size based on interpolation
 
 	cv::Vec<double, 14> mte;
@@ -86,7 +108,7 @@ void read_mapping_file(string path, cv::Mat &mapping_table)
 					mte[2] = round(mte[2]);
 					mte[3] = round(mte[3]);
 				}
-				#ifdef CUDA
+				#ifdef ON_GPU
 				if constexpr (single_input)
 				{
 					mte[0] = (width * ((int) mte[1]) + ((int) mte[0])) * 3;
@@ -256,11 +278,18 @@ void parse_args(int argc, char **argv, program_args &args)
 template <interpolation_type interpol_t>
 void remap(const cv::Mat &in_1, const cv::Mat &in_2, const cv::Mat &map, cv::Mat &out)
 {
-	#ifdef CUDA
+	#ifdef WITH_CUDA
 	if constexpr (interpol_t == interpolation_type::NEAREST_NEIGHBOUR)
 		cuda_remap_nn(in_1.data, in_2.data, out.data);
 	else if constexpr (interpol_t == interpolation_type::BILINEAR)
 		cuda_remap_li(in_1.data, in_2.data, out.data);
+	#else
+	#ifdef WITH_OPENCL
+	CL_ERROR_CHECK( cl_cmdq.enqueueWriteBuffer(cl_in_1, CL_TRUE, 0, in_1.dataend - in_1.datastart, in_1.data) );
+	CL_ERROR_CHECK( cl_cmdq.enqueueWriteBuffer(cl_in_2, CL_TRUE, 0, in_2.dataend - in_2.datastart, in_2.data) );
+	CL_ERROR_CHECK( cl_cmdq.enqueueNDRangeKernel(cl_k, 0, cl_global_size, cl_local_size) );
+	CL_ERROR_CHECK( cl_cmdq.finish() );
+	CL_ERROR_CHECK( cl_cmdq.enqueueReadBuffer(cl_out, CL_TRUE, 0, out.dataend - out.datastart, out.data) );
 	#else
 	cv::Vec<double, 14> mte;
 #pragma omp parallel for collapse(2) schedule(dynamic, 2048) private(mte)
@@ -276,6 +305,7 @@ void remap(const cv::Mat &in_1, const cv::Mat &in_2, const cv::Mat &map, cv::Mat
 		}
 	}
 	#endif
+	#endif
 }
 
 /**
@@ -289,13 +319,20 @@ void remap(const cv::Mat &in_1, const cv::Mat &in_2, const cv::Mat &map, cv::Mat
 template <interpolation_type interpol_t>
 void remap(const cv::Mat &in, const cv::Mat &map, cv::Mat &out)
 {
-	#ifdef CUDA
+	#ifdef WITH_CUDA
 	if constexpr (interpol_t == interpolation_type::NEAREST_NEIGHBOUR)
 		cuda_remap_nn(in.data, out.data);
 	else if constexpr (interpol_t == interpolation_type::BILINEAR)
 		cuda_remap_li(in.data, out.data);
 	#else
+	#ifdef WITH_OPENCL
+	CL_ERROR_CHECK( cl_cmdq.enqueueWriteBuffer(cl_in_1, CL_TRUE, 0, in.dataend - in.datastart, in.data) );
+	CL_ERROR_CHECK( cl_cmdq.enqueueNDRangeKernel(cl_k, 0, cl_global_size, cl_local_size) );
+	CL_ERROR_CHECK( cl_cmdq.finish() );
+	CL_ERROR_CHECK( cl_cmdq.enqueueReadBuffer(cl_out, CL_TRUE, 0, out.dataend - out.datastart, out.data) );
+	#else
 	remap<interpol_t>(in(cv::Rect(0, 0, in.rows, in.rows)), in(cv::Rect(in.rows, 0, in.rows, in.rows)), map, out);
+	#endif
 	#endif
 }
 
@@ -389,11 +426,11 @@ void process_video(cv::VideoCapture &in_1, cv::VideoCapture &in_2, const cv::Mat
 
 			// check time
 			TIMES(nrframes++;
-				  if ((nrframes % 300) == 0) {
+				  if ((nrframes % 150) == 0) {
 					  printf("frame nr: %u\n", nrframes);
-					  printf("%f avg mapping time\n", mapping_sum / nrframes);
-					  printf("%f avg loading time\n", loading_sum / nrframes);
-					  printf("%f avg preview time\n", preview_sum / nrframes);
+					  printf("%fms avg mapping time\n", mapping_sum / nrframes * 1000);
+					  printf("%fms avg loading time\n", loading_sum / nrframes * 1000);
+					  printf("%fms avg preview time\n", preview_sum / nrframes * 1000);
 					  printf("%f fps mapping\n", nrframes / mapping_sum);
 					  printf("%f fps mapping + loading\n", nrframes / (mapping_sum + loading_sum));
 					  printf("%f fps mapping + loading + preview\n", nrframes / (mapping_sum + loading_sum + preview_sum));
@@ -471,6 +508,19 @@ void process_input(const program_args &args)
 	cv::VideoCapture cap_1, cap_2;
 	cv::VideoWriter wrt;
 
+	#ifdef WITH_OPENCL
+	cl_ctxt = cl::Context(CL_DEVICE_TYPE_GPU);
+	cl_cmdq = cl::CommandQueue(cl_ctxt);
+	cl_prog = cl::Program(cl_ctxt, string((char*) src_mapping_cl, src_mapping_cl_len), true);
+	if constexpr (interpol_t == interpolation_type::NEAREST_NEIGHBOUR)
+		cl_k = cl::Kernel(cl_prog, "remap_nn");
+	else if constexpr (interpol_t == interpolation_type::BILINEAR)
+		cl_k = cl::Kernel(cl_prog, "remap_li");
+	CL_ERROR_CHECK( cl_k.setArg(0, cl_in_1) );
+	CL_ERROR_CHECK( cl_k.setArg(2, cl_out) );
+	CL_ERROR_CHECK( cl_k.setArg(3, cl_map) );
+	#endif
+
 	// create windows
 	cv::namedWindow(WINDOW_NAME, cv::WINDOW_KEEPRATIO | cv::WINDOW_NORMAL);
 	cv::resizeWindow(WINDOW_NAME, 1440, 720);
@@ -479,9 +529,22 @@ void process_input(const program_args &args)
 	{
 		read_mapping_file<interpol_t, true>(args.map_path, mapping_table);
 
-		#ifdef CUDA
+		#ifdef WITH_CUDA
 		// allocate device memory and copy mapping table
 		init_device_memory(mapping_table.data, mapping_table.cols, mapping_table.rows);
+		#endif
+		#ifdef WITH_OPENCL
+		size_t elelen = mapping_table.rows * mapping_table.cols;
+		cl_global_size = cl::NDRange(elelen % LOCAL_SIZE == 0 ? elelen : elelen + LOCAL_SIZE - elelen % LOCAL_SIZE);
+		cl_map = cl::Buffer(cl_ctxt, CL_MEM_READ_WRITE, mapping_table.dataend - mapping_table.datastart);
+		cl_in_1 = cl::Buffer(cl_ctxt, CL_MEM_READ_WRITE, elelen * 3);
+		cl_out = cl::Buffer(cl_ctxt, CL_MEM_READ_WRITE, elelen * 3);
+		CL_ERROR_CHECK( cl_k.setArg(0, cl_in_1) );
+		CL_ERROR_CHECK( cl_k.setArg(1, cl_in_1) );
+		CL_ERROR_CHECK( cl_k.setArg(2, cl_out) );
+		CL_ERROR_CHECK( cl_k.setArg(3, cl_map) );
+		CL_ERROR_CHECK( cl_k.setArg(4, (unsigned int) elelen) );
+		CL_ERROR_CHECK( cl_cmdq.enqueueWriteBuffer(cl_map, CL_TRUE, 0, mapping_table.dataend - mapping_table.datastart, mapping_table.data) );
 		#endif
 
 		// init output mat
@@ -541,9 +604,23 @@ void process_input(const program_args &args)
 	{
 		read_mapping_file<interpol_t, false>(args.map_path, mapping_table);
 
-		#ifdef CUDA
+		#ifdef WITH_CUDA
 		// allocate device memory and copy mapping table
 		init_device_memory(mapping_table.data, mapping_table.cols, mapping_table.rows);
+		#endif
+		#ifdef WITH_OPENCL
+		size_t elelen = mapping_table.rows * mapping_table.cols;
+		cl_global_size = cl::NDRange(elelen % LOCAL_SIZE == 0 ? elelen : elelen + LOCAL_SIZE - elelen % LOCAL_SIZE);
+		cl_map = cl::Buffer(cl_ctxt, CL_MEM_READ_WRITE, mapping_table.dataend - mapping_table.datastart);
+		cl_in_1 = cl::Buffer(cl_ctxt, CL_MEM_READ_WRITE, elelen * 3);
+		cl_in_2 = cl::Buffer(cl_ctxt, CL_MEM_READ_WRITE, elelen * 3);
+		cl_out = cl::Buffer(cl_ctxt, CL_MEM_READ_WRITE, elelen * 3);
+		CL_ERROR_CHECK( cl_k.setArg(0, cl_in_1) );
+		CL_ERROR_CHECK( cl_k.setArg(1, cl_in_2) );
+		CL_ERROR_CHECK( cl_k.setArg(2, cl_out) );
+		CL_ERROR_CHECK( cl_k.setArg(3, cl_map) );
+		CL_ERROR_CHECK( cl_k.setArg(4, (unsigned int) elelen) );
+		CL_ERROR_CHECK( cl_cmdq.enqueueWriteBuffer(cl_map, CL_TRUE, 0, mapping_table.dataend - mapping_table.datastart, mapping_table.data) );
 		#endif
 
 		// init output mat

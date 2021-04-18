@@ -416,7 +416,7 @@ int main(int argc, char **argv)
 		// set optional codec for cameras
 		if (args.has_fourcc)
 		{
-			if (!cap.set(CV_CAP_PROP_FOURCC, static_cast<double>(args.fourcc)) && cap.get(CV_CAP_PROP_FOURCC) == args.fourcc)
+			if (!cap.set(CAP_PROP_FOURCC, static_cast<double>(args.fourcc)) && cap.get(CAP_PROP_FOURCC) == args.fourcc)
 				printf("Couldn't set codec to %s\n", args.fourcc_str);
 			DBG(cout << args.fourcc_str << endl);
 		}
@@ -424,10 +424,10 @@ int main(int argc, char **argv)
 		if (args.has_resolution)
 		{
 			// try to set given resolution and check success
-			if (!cap.set(CAP_PROP_FRAME_WIDTH, width))
-				printf("Couldn't set width to %d\n", width);
-			if (!cap.set(CAP_PROP_FRAME_HEIGHT, height))
-				printf("Couldn't set heigth to %d\n", height);
+			if (!cap.set(CAP_PROP_FRAME_WIDTH, args.width))
+				printf("Couldn't set width to %d\n", args.width);
+			if (!cap.set(CAP_PROP_FRAME_HEIGHT, args.height))
+				printf("Couldn't set heigth to %d\n", args.height);
 		}
 
 		// try to open video
@@ -459,17 +459,15 @@ int main(int argc, char **argv)
 		}
 		if (args.has_resolution)
 		{
-			width = args.width;
-			height = args.height;
 			// try to set given resolution and check success
-			if (!cap_front.set(CAP_PROP_FRAME_WIDTH, height))
-				printf("Couldn't set front width to %d\n", height);
-			if (!cap_front.set(CAP_PROP_FRAME_HEIGHT, height))
-				printf("Couldn't set front heigth to %d\n", height);
-			if (!cap_rear.set(CAP_PROP_FRAME_WIDTH, height))
-				printf("Couldn't set rear width to %d\n", height);
-			if (!cap_rear.set(CAP_PROP_FRAME_HEIGHT, height))
-				printf("Couldn't set rear heigth to %d\n", height);
+			if (!cap_front.set(CAP_PROP_FRAME_WIDTH, args.width))
+				printf("Couldn't set front width to %d\n", args.width);
+			if (!cap_front.set(CAP_PROP_FRAME_HEIGHT, args.height))
+				printf("Couldn't set front heigth to %d\n", args.height);
+			if (!cap_rear.set(CAP_PROP_FRAME_WIDTH, args.width))
+				printf("Couldn't set rear width to %d\n", args.width);
+			if (!cap_rear.set(CAP_PROP_FRAME_HEIGHT, args.height))
+				printf("Couldn't set rear heigth to %d\n", args.height);
 		}
 
 		cap_front.open(args.file_front);
@@ -484,7 +482,6 @@ int main(int argc, char **argv)
 			printf("Could not open rear video %s\n", args.file_rear);
 			return EXIT_FAILURE;
 		}
-
 		if (cap_front.get(CAP_PROP_FRAME_WIDTH) != cap_rear.get(CAP_PROP_FRAME_WIDTH) || cap_front.get(CAP_PROP_FRAME_HEIGHT) != cap_rear.get(CAP_PROP_FRAME_HEIGHT))
 		{
 			printf("Resolution of the front and rear video differ.\n");

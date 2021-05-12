@@ -1,45 +1,35 @@
 #include <iostream>
-#include <opencv2/opencv.hpp>
 #include <fstream>
+#include <stdexcept>
+#include <opencv2/opencv.hpp>
 #ifdef _OPENMP
 #include <omp.h>
 #endif
-#ifdef WITH_OPENCL
-#include <CL/cl.hpp>
-#include "mapping.cl.h"
-#ifdef DEBUG
-cl_int _cl_error = 0;
-#define CL_ERROR_CHECK(FNC_CALL) _cl_error = FNC_CALL; if(_cl_error != 0) { printf("%s: %s\n",  #FNC_CALL, clGetErrorString(_cl_error)); exit(EXIT_FAILURE); }
-#else
-#define CL_ERROR_CHECK(FNC_CALL)
-#endif
-#endif
 #include "mapping.h"
+#ifdef WITH_OPENCL
+#include <CL/cl2.hpp>
+#include "mapping.cl.h"
+#include "clerror.h"
+#endif
 
 using namespace std;
 
 const string WINDOW_NAME = "Output";
 
-#ifdef WITH_OPENCL
-const size_t LOCAL_SIZE = 1024;
-cl::Context cl_ctxt;
-cl::CommandQueue cl_cmdq;
-cl::Program cl_prog;
-cl::Kernel cl_k;
-cl::Buffer cl_map;
-cl::Buffer cl_in_1;
-cl::Buffer cl_in_2;
-cl::Buffer cl_out;
-cl::NDRange cl_local_size(LOCAL_SIZE);
-cl::NDRange cl_global_size;
-#endif
+enum program_mode
+{
+	INTERACTIVE,
+	VIDEO,
+	IMAGE
+};
 
 struct program_args
 {
 	string in_path_1, in_path_2, map_path, out_path, out_extension;
 	interpolation_type interpol_t = interpolation_type::NEAREST_NEIGHBOUR;
-	bool vid_out = false;
-	int out_codec;
+	int out_codec = 0, out_dec_len = 0;
+	size_t frameskip = 0, num_frames = 0, search_range = 0;
+	program_mode prog_mode = program_mode::INTERACTIVE;
 };
 
 /**
@@ -151,34 +141,77 @@ void parse_args(int argc, char **argv, program_args &args)
 {
 	const string USAGE_TEXT = string("usage:\n  ")
 							 + argv[0] + string(" -h\n  ")
-							 + argv[0] + string(" [-vo] [-li] [-c <codec>] [-o <output file>] -m <map file> <input file>\n  ")
-							 + argv[0] + string(" [-vo] [-li] [-c <codec>] [-o <output file>] -m <map file> <input file 1> <input file 2>");
-	const string HELP_TEXT = "options:\n"
-							 "  --help\t\t\t-h\tprint this\n"
-							 "  --mappingfile\t\t\t-m\tmapping file path\n"
-							 "  --output\t\t\t-o\toutput file path\n"
-							 "  --linear-interpolation\t-li\tenable linear interpolation\n"
-							 "  --video\t\t\t\tconvert to video\n"
-							 "  --codec\t--fourcc\t\tcodec for video output";
+							 + argv[0] + string(" MODE [-li] [-sr <range>] [-fs <frameskip> | -nf <number frames>] [-c <codec>] [-o <output file>] -m <map file> <input file 1> [<input file 2>]\n");
+	const string HELP_TEXT = "modes:\n"
+							 "  interactive             int  interactively jump through the video and save images\n"
+							 "  video                   vid  convert the input to a video file\n"
+							 "  image                   img  convert the input to an image sequence\n"
+							 "\n"
+							 "global options:\n"
+							 "  --help                  -h   print this message\n"
+							 "  --mappingfile  --map    -m   mapping file path\n"
+							 "  --output                -o   output file path with printf format for image numbers\n"
+							 "  --linear-interpolation  -li  enable linear interpolation\n"
+							 "  --search-range          -sr  range to search befor and after the current frame for sharper image\n"
+							 "video options:\n"
+							 "  --codec  --fourcc       -c   codec for video output\n"
+							 "  --frameskip             -fs  number of frames to skip between each image\n"
+							 "  --number-frames         -nf  number of frames to output with even spacing from start to end\n"
+							 "image options:\n"
+							 "  --frameskip             -fs  number of frames to skip between each image\n"
+							 "  --number-frames         -nf  number of frames to output with even spacing from start to end\n";
 
-	int i;
-	// parse args
-	for (i = 1; i < argc; i++)
+	// parse mode of operation
+	if (argc < 2)
 	{
-		if (string("--help") == argv[i] || string("-h") == argv[i])
-		{
-			cout << HELP_TEXT << '\n' << USAGE_TEXT << endl;
-			exit(EXIT_SUCCESS);
-		}
-		else if (string("--output") == argv[i] || string("-o") == argv[i])
+		cerr << "No arguments provided.\n" << USAGE_TEXT << '\n' << HELP_TEXT << endl;
+		exit(EXIT_FAILURE);
+	}
+	if (string("--help") == argv[1] || string("-h") == argv[1])
+	{
+		cout << USAGE_TEXT << '\n' << HELP_TEXT << endl;
+		exit(EXIT_SUCCESS);
+	}
+	else if (string("video") == argv[1] || string("vid") == argv[1])
+		args.prog_mode = program_mode::VIDEO;
+	else if (string("image") == argv[1] || string("img") == argv[1])
+		args.prog_mode = program_mode::IMAGE;
+	else if (string("interactive") == argv[1] || string("int") == argv[1])
+		args.prog_mode = program_mode::INTERACTIVE;
+	else
+	{
+		cerr << '"' << argv[1] << "\" is not a valid mode.\n" << USAGE_TEXT << '\n' << HELP_TEXT << endl;
+		exit(EXIT_FAILURE);
+	}
+
+	// parse args
+	int i, inc = 0;
+	for (i = 2; i < argc; i++)
+	{
+		if (string("--output") == argv[i] || string("-o") == argv[i])
 		{
 			i++;
 			if (i < argc)
 			{
 				args.out_path = argv[i];
 				size_t ext_begin = args.out_path.find_last_of('.');
+				if (ext_begin == string::npos)
+				{
+					cerr << "output path \"" << argv[i] << "\" has no filename extension." << endl;
+					exit(EXIT_FAILURE);
+				}
 				args.out_extension = args.out_path.substr(ext_begin);
-				args.out_path = args.out_path.substr(0, args.out_path.size() - ext_begin);
+				args.out_path = args.out_path.substr(0, args.out_path.size() - args.out_extension.size());
+				size_t placeholder_begin = args.out_path.find('%'), placeholder_end = args.out_path.find('d', placeholder_begin);
+				if (placeholder_begin != string::npos)
+				{
+					if (placeholder_end == string::npos)
+					{
+						cerr << "started placeholder '%' at index " << placeholder_begin << " without matching ending 'd'." << endl;
+						exit(EXIT_FAILURE);
+					}
+					args.out_dec_len = stoi(args.out_path.substr(placeholder_begin + 1, placeholder_end - placeholder_begin - 1));
+				}
 			}
 			else
 			{
@@ -190,12 +223,13 @@ void parse_args(int argc, char **argv, program_args &args)
 		{
 			args.interpol_t = interpolation_type::BILINEAR;
 		}
-		else if (string("--video") == argv[i])
+		else if (string("-c") == argv[i] || string("--codec") == argv[i] || string("--fourcc") == argv[i])
 		{
-			args.vid_out = true;
-		}
-		else if (string("--codec") == argv[i] || string("--fourcc") == argv[i])
-		{
+			if (args.prog_mode != program_mode::VIDEO)
+			{
+				cerr << "the codec option is only available in video mode." << endl;
+				exit(EXIT_FAILURE);
+			}
 			i++;
 			if (i < argc)
 			{
@@ -228,7 +262,86 @@ void parse_args(int argc, char **argv, program_args &args)
 				exit(EXIT_FAILURE);
 			}
 		}
-		else break;
+		else if (string("-fs") == argv[i] || string("--frameskip") == argv[i])
+		{
+			if (args.prog_mode != program_mode::VIDEO && args.prog_mode != program_mode::IMAGE)
+			{
+				cerr << "the frameskip option is only available in video and image mode." << endl;
+				exit(EXIT_FAILURE);
+			}
+			if (args.num_frames != 0)
+			{
+				cerr << "Only frameskip or number-frames can be set at the same time." << endl;
+				exit(EXIT_FAILURE);
+			}
+			i++;
+			if (i < argc)
+			{
+				args.frameskip = stoul(argv[i]);
+			}
+			else
+			{
+				cerr << "no frameskip provided." << endl;
+				exit(EXIT_FAILURE);
+			}
+		}
+		else if (string("-nf") == argv[i] || string("--number-frames") == argv[i])
+		{
+			if (args.prog_mode != program_mode::VIDEO && args.prog_mode != program_mode::IMAGE)
+			{
+				cerr << "the number frames option is only available in video and image mode." << endl;
+				exit(EXIT_FAILURE);
+			}
+			if (args.frameskip != 0)
+			{
+				cerr << "Only frameskip or number-frames can be set at the same time." << endl;
+				exit(EXIT_FAILURE);
+			}
+			i++;
+			if (i < argc)
+			{
+				args.num_frames = stoul(argv[i]);
+			}
+			else
+			{
+				cerr << "no frameskip provided." << endl;
+				exit(EXIT_FAILURE);
+			}
+		}
+		else if (string("-sr") == argv[i] || string("--search-range") == argv[i])
+		{
+			i++;
+			if (i < argc)
+			{
+				args.search_range = stoul(argv[i]);
+			}
+			else
+			{
+				cerr << "no search range provided." << endl;
+				exit(EXIT_FAILURE);
+			}
+		}
+		else
+		{
+			if (*(argv[i]) == '-')
+			{
+				cerr << "unknown argument \"" << argv[i] << "\"\n" << USAGE_TEXT << endl;
+				exit(EXIT_FAILURE);
+			}
+			else
+			{
+				inc++;
+				if (inc == 1)
+					args.in_path_1 = argv[i];
+				else if (inc == 2)
+					args.in_path_2 = argv[i];
+				else
+				{
+					cerr << "unknown argument or too many input files.\n" << USAGE_TEXT << endl;
+					exit(EXIT_FAILURE);
+				}
+			}
+		}
 	}
 
 	// check if map is provided
@@ -242,29 +355,37 @@ void parse_args(int argc, char **argv, program_args &args)
 	if (args.out_path.empty())
 	{
 		args.out_path = "equirectangular";
-		if (args.vid_out)
+		if (args.prog_mode == program_mode::VIDEO)
 			args.out_extension = ".mkv";
 		else
 			args.out_extension = ".png";
 	}
+
+	// default search range for interactive mode
+	if (args.prog_mode == program_mode::INTERACTIVE && args.search_range == 0)
+		args.search_range = 10;
 	
-	// parse input files
-	if (argc - i == 1)
-	{
-		args.in_path_1 = argv[i];
+	// print input configuration
+	if (inc == 1)
 		cout << "Processing video file \"" << args.in_path_1 << "\" with mapping table \"" << args.map_path << "\"." << endl;
-	}
-	else if (argc - i == 2)
-	{
-		args.in_path_1 = argv[i];
-		args.in_path_2 = argv[i + 1];
-		cout << "Processing video files \"" << args.in_path_1 << "\" and \"" << args.in_path_2 << "\" with mapping table \"" << args.map_path << "\"." << endl;
-	}
 	else
-	{
-		cerr << "too many arguments." << endl;
-		exit(EXIT_FAILURE);
-	}
+		cout << "Processing video files \"" << args.in_path_1 << "\" and \"" << args.in_path_2 << "\" with mapping table \"" << args.map_path << "\"." << endl;
+
+	DBG(
+		cout << "program arguments:"
+			 << "\n  mode: " << args.prog_mode
+			 << "\n  input 1:            " << args.in_path_1
+			 << "\n  input 2:            " << args.in_path_2
+			 << "\n  map:                " << args.map_path
+			 << "\n  output:             " << args.out_path
+			 << "\n  output extension:   " << args.out_extension
+			 << "\n  output codec:       " << args.out_codec
+			 << "\n  interpolation type: " << args.interpol_t
+			 << "\n  search range:       " << args.search_range
+			 << "\n  frameskip:          " << args.frameskip
+			 << "\n  number frames:      " << args.num_frames
+			 << endl;
+	)
 }
 
 /**
@@ -276,7 +397,7 @@ void parse_args(int argc, char **argv, program_args &args)
  * @param out output
  */
 template <interpolation_type interpol_t>
-void remap(const cv::Mat &in_1, const cv::Mat &in_2, const cv::Mat &map, cv::Mat &out)
+void remap(const cv::Mat &in_1, const cv::Mat &in_2, const cv::Mat &map, cv::Mat &out, extra_data &extra_data)
 {
 	#ifdef WITH_CUDA
 	if constexpr (interpol_t == interpolation_type::NEAREST_NEIGHBOUR)
@@ -285,11 +406,11 @@ void remap(const cv::Mat &in_1, const cv::Mat &in_2, const cv::Mat &map, cv::Mat
 		cuda_remap_li(in_1.data, in_2.data, out.data);
 	#else
 	#ifdef WITH_OPENCL
-	CL_ERROR_CHECK( cl_cmdq.enqueueWriteBuffer(cl_in_1, CL_TRUE, 0, in_1.dataend - in_1.datastart, in_1.data) );
-	CL_ERROR_CHECK( cl_cmdq.enqueueWriteBuffer(cl_in_2, CL_TRUE, 0, in_2.dataend - in_2.datastart, in_2.data) );
-	CL_ERROR_CHECK( cl_cmdq.enqueueNDRangeKernel(cl_k, 0, cl_global_size, cl_local_size) );
-	CL_ERROR_CHECK( cl_cmdq.finish() );
-	CL_ERROR_CHECK( cl_cmdq.enqueueReadBuffer(cl_out, CL_TRUE, 0, out.dataend - out.datastart, out.data) );
+	CL_ERROR_CHECK( extra_data.cmdq.enqueueWriteBuffer(extra_data.in_1, CL_TRUE, 0, in_1.dataend - in_1.datastart, in_1.data) );
+	CL_ERROR_CHECK( extra_data.cmdq.enqueueWriteBuffer(extra_data.in_2, CL_TRUE, 0, in_2.dataend - in_2.datastart, in_2.data) );
+	CL_ERROR_CHECK( extra_data.cmdq.enqueueNDRangeKernel(extra_data.k, 0, extra_data.global_size, extra_data.local_size) );
+	CL_ERROR_CHECK( extra_data.cmdq.finish() );
+	CL_ERROR_CHECK( extra_data.cmdq.enqueueReadBuffer(extra_data.out, CL_TRUE, 0, out.dataend - out.datastart, out.data) );
 	#else
 	cv::Vec<double, 14> mte;
 #pragma omp parallel for collapse(2) schedule(dynamic, 2048) private(mte)
@@ -317,7 +438,7 @@ void remap(const cv::Mat &in_1, const cv::Mat &in_2, const cv::Mat &map, cv::Mat
  * @param out output image
  */
 template <interpolation_type interpol_t>
-void remap(const cv::Mat &in, const cv::Mat &map, cv::Mat &out)
+void remap(const cv::Mat &in, const cv::Mat &map, cv::Mat &out, extra_data &extra_data)
 {
 	#ifdef WITH_CUDA
 	if constexpr (interpol_t == interpolation_type::NEAREST_NEIGHBOUR)
@@ -326,18 +447,18 @@ void remap(const cv::Mat &in, const cv::Mat &map, cv::Mat &out)
 		cuda_remap_li(in.data, out.data);
 	#else
 	#ifdef WITH_OPENCL
-	CL_ERROR_CHECK( cl_cmdq.enqueueWriteBuffer(cl_in_1, CL_TRUE, 0, in.dataend - in.datastart, in.data) );
-	CL_ERROR_CHECK( cl_cmdq.enqueueNDRangeKernel(cl_k, 0, cl_global_size, cl_local_size) );
-	CL_ERROR_CHECK( cl_cmdq.finish() );
-	CL_ERROR_CHECK( cl_cmdq.enqueueReadBuffer(cl_out, CL_TRUE, 0, out.dataend - out.datastart, out.data) );
+	CL_ERROR_CHECK( extra_data.cmdq.enqueueWriteBuffer(extra_data.in_1, CL_TRUE, 0, in.dataend - in.datastart, in.data) );
+	CL_ERROR_CHECK( extra_data.cmdq.enqueueNDRangeKernel(extra_data.k, 0, extra_data.global_size, extra_data.local_size) );
+	CL_ERROR_CHECK( extra_data.cmdq.finish() );
+	CL_ERROR_CHECK( extra_data.cmdq.enqueueReadBuffer(extra_data.out, CL_TRUE, 0, out.dataend - out.datastart, out.data) );
 	#else
-	remap<interpol_t>(in(cv::Rect(0, 0, in.rows, in.rows)), in(cv::Rect(in.rows, 0, in.rows, in.rows)), map, out);
+	remap<interpol_t>(in(cv::Rect(0, 0, in.rows, in.rows)), in(cv::Rect(in.rows, 0, in.rows, in.rows)), map, out, extra_data);
 	#endif
 	#endif
 }
 
 template <bool single_input>
-cv::Mat get_sharpest_image(cv::VideoCapture &in_1, cv::VideoCapture &in_2, const cv::Mat &map, unsigned short before = 10, unsigned short after = 10)
+cv::Mat get_sharpest_image(cv::VideoCapture &in_1, cv::VideoCapture &in_2, const cv::Mat &map, extra_data &extra_data, unsigned short before = 10, unsigned short after = 10)
 {
 	cv::Mat frame_1, frame_2, grey, laplace, mean, stddev, eqr_frame, best_frame;
 	double best_stddev = 0;
@@ -353,12 +474,12 @@ cv::Mat get_sharpest_image(cv::VideoCapture &in_1, cv::VideoCapture &in_2, const
 		in_1 >> frame_1;
 		if constexpr (single_input)
 		{
-			remap<interpolation_type::NEAREST_NEIGHBOUR>(frame_1, map, eqr_frame);
+			remap<interpolation_type::NEAREST_NEIGHBOUR>(frame_1, map, eqr_frame, extra_data);
 		}
 		else
 		{
 			in_2 >> frame_2;
-			remap<interpolation_type::NEAREST_NEIGHBOUR>(frame_1, frame_2, map, eqr_frame);
+			remap<interpolation_type::NEAREST_NEIGHBOUR>(frame_1, frame_2, map, eqr_frame, extra_data);
 		}
 		cv::cvtColor(eqr_frame, grey, cv::COLOR_BGR2GRAY);
 		cv::Laplacian(grey, laplace, CV_64F);
@@ -379,12 +500,13 @@ cv::Mat get_sharpest_image(cv::VideoCapture &in_1, cv::VideoCapture &in_2, const
 	return best_frame;
 }
 
-template <interpolation_type interpol_t, bool single_input, bool wrt_out>
-void process_video(cv::VideoCapture &in_1, cv::VideoCapture &in_2, const cv::Mat &map, cv::Mat &equiframe, cv::VideoWriter &wrt, const program_args &args)
+template <interpolation_type interpol_t, bool single_input, program_mode prog_m>
+void process_video(cv::VideoCapture &in_1, cv::VideoCapture &in_2, const cv::Mat &map, cv::Mat &equiframe, cv::VideoWriter &wrt, const program_args &args, extra_data &extra_data)
 {
 	cv::Mat frame_1, frame_2;
 	int key, out_idx = 1;
-	bool playing = wrt_out, play_once = true;
+	char full_out_path[args.out_path.size() + args.out_extension.size() + args.out_dec_len];
+	bool playing = prog_m != program_mode::INTERACTIVE, play_once = true;
 	TIMES(
 		unsigned int nrframes = 0; double mapping_sum = 0, loading_sum = 0, preview_sum = 0;
 		std::chrono::steady_clock::time_point mapping_start, mapping_end, loading_start, loading_end, preview_start, preview_end;)
@@ -412,9 +534,9 @@ void process_video(cv::VideoCapture &in_1, cv::VideoCapture &in_2, const cv::Mat
 
 			TIMES(mapping_start = std::chrono::steady_clock::now();)
 			if constexpr (single_input)
-				remap<interpol_t>(frame_1, map, equiframe);
+				remap<interpol_t>(frame_1, map, equiframe, extra_data);
 			else
-				remap<interpol_t>(frame_1, frame_2, map, equiframe);
+				remap<interpol_t>(frame_1, frame_2, map, equiframe, extra_data);
 			TIMES(mapping_end = std::chrono::steady_clock::now();
 				  mapping_sum += std::chrono::duration_cast<std::chrono::duration<double>>(mapping_end - mapping_start).count();)
 
@@ -438,11 +560,7 @@ void process_video(cv::VideoCapture &in_1, cv::VideoCapture &in_2, const cv::Mat
 				  })
 			play_once = false;
 		}
-		if constexpr (wrt_out)
-		{
-			wrt << equiframe;
-		}
-		else
+		if constexpr (prog_m == program_mode::INTERACTIVE)
 		{
 			switch (key)
 			{
@@ -454,11 +572,13 @@ void process_video(cv::VideoCapture &in_1, cv::VideoCapture &in_2, const cv::Mat
 				break;
 			case 'f':
 				playing = false;
-				equiframe = get_sharpest_image<single_input>(in_1, in_2, map);
+				if (args.search_range > 0)
+					equiframe = get_sharpest_image<single_input>(in_1, in_2, map, extra_data, args.search_range, args.search_range);
 				imshow(WINDOW_NAME, equiframe);
 				break;
 			case 's':
-				cv::imwrite(args.out_path + '_' + to_string(out_idx) + args.out_extension, equiframe);
+				sprintf(full_out_path, (args.out_path + args.out_extension).c_str(), out_idx);
+				cv::imwrite(full_out_path, equiframe);
 				out_idx++;
 				break;
 			case '.':
@@ -498,27 +618,59 @@ void process_video(cv::VideoCapture &in_1, cv::VideoCapture &in_2, const cv::Mat
 				break;
 			}
 		}
+		else
+		{
+			// TODO only short fix
+			if (args.search_range > 0)
+				equiframe = get_sharpest_image<single_input>(in_1, in_2, map, extra_data, args.search_range, args.search_range);
+
+			if constexpr (single_input)
+			{
+				// for (size_t i = 0; i < args.frameskip - args.search_range; i++)
+				for (size_t i = 0; i < args.frameskip; i++)
+				{
+					in_1.grab();
+				}
+			}
+			else
+			{
+				// for (size_t i = 0; i < args.frameskip - args.search_range; i++)
+				for (size_t i = 0; i < args.frameskip; i++)
+				{
+					in_1.grab();
+					in_2.grab();
+				}
+			}
+			if constexpr (prog_m == program_mode::VIDEO)
+			{
+				wrt << equiframe;
+			}
+			if constexpr (prog_m == program_mode::IMAGE)
+			{
+				sprintf(full_out_path, (args.out_path + args.out_extension).c_str(), out_idx);
+				cv::imwrite(full_out_path, equiframe);
+				out_idx++;
+			}
+		}
 	}
 }
 
 template <interpolation_type interpol_t>
-void process_input(const program_args &args)
+void process_input(program_args &args)
 {
 	cv::Mat frame_1, frame_2, equiframe, mapping_table;
 	cv::VideoCapture cap_1, cap_2;
 	cv::VideoWriter wrt;
 
+	extra_data extra_data;
 	#ifdef WITH_OPENCL
-	cl_ctxt = cl::Context(CL_DEVICE_TYPE_GPU);
-	cl_cmdq = cl::CommandQueue(cl_ctxt);
-	cl_prog = cl::Program(cl_ctxt, string((char*) src_mapping_cl, src_mapping_cl_len), true);
+	extra_data.ctxt = cl::Context(CL_DEVICE_TYPE_GPU);
+	extra_data.cmdq = cl::CommandQueue(extra_data.ctxt);
+	extra_data.prog = cl::Program(extra_data.ctxt, string((char*) src_mapping_cl, src_mapping_cl_len), true);
 	if constexpr (interpol_t == interpolation_type::NEAREST_NEIGHBOUR)
-		cl_k = cl::Kernel(cl_prog, "remap_nn");
+		extra_data.k = cl::Kernel(extra_data.prog, "remap_nn");
 	else if constexpr (interpol_t == interpolation_type::BILINEAR)
-		cl_k = cl::Kernel(cl_prog, "remap_li");
-	CL_ERROR_CHECK( cl_k.setArg(0, cl_in_1) );
-	CL_ERROR_CHECK( cl_k.setArg(2, cl_out) );
-	CL_ERROR_CHECK( cl_k.setArg(3, cl_map) );
+		extra_data.k = cl::Kernel(extra_data.prog, "remap_li");
 	#endif
 
 	// create windows
@@ -535,16 +687,16 @@ void process_input(const program_args &args)
 		#endif
 		#ifdef WITH_OPENCL
 		size_t elelen = mapping_table.rows * mapping_table.cols;
-		cl_global_size = cl::NDRange(elelen % LOCAL_SIZE == 0 ? elelen : elelen + LOCAL_SIZE - elelen % LOCAL_SIZE);
-		cl_map = cl::Buffer(cl_ctxt, CL_MEM_READ_WRITE, mapping_table.dataend - mapping_table.datastart);
-		cl_in_1 = cl::Buffer(cl_ctxt, CL_MEM_READ_WRITE, elelen * 3);
-		cl_out = cl::Buffer(cl_ctxt, CL_MEM_READ_WRITE, elelen * 3);
-		CL_ERROR_CHECK( cl_k.setArg(0, cl_in_1) );
-		CL_ERROR_CHECK( cl_k.setArg(1, cl_in_1) );
-		CL_ERROR_CHECK( cl_k.setArg(2, cl_out) );
-		CL_ERROR_CHECK( cl_k.setArg(3, cl_map) );
-		CL_ERROR_CHECK( cl_k.setArg(4, (unsigned int) elelen) );
-		CL_ERROR_CHECK( cl_cmdq.enqueueWriteBuffer(cl_map, CL_TRUE, 0, mapping_table.dataend - mapping_table.datastart, mapping_table.data) );
+		extra_data.global_size = cl::NDRange(elelen % extra_data::LOCAL_SIZE == 0 ? elelen : elelen + extra_data::LOCAL_SIZE - elelen % extra_data::LOCAL_SIZE);
+		extra_data.map = cl::Buffer(extra_data.ctxt, CL_MEM_READ_WRITE, mapping_table.dataend - mapping_table.datastart);
+		extra_data.in_1 = cl::Buffer(extra_data.ctxt, CL_MEM_READ_WRITE, elelen * 3);
+		extra_data.out = cl::Buffer(extra_data.ctxt, CL_MEM_READ_WRITE, elelen * 3);
+		CL_ERROR_CHECK( extra_data.k.setArg(0, extra_data.in_1) );
+		CL_ERROR_CHECK( extra_data.k.setArg(1, extra_data.in_1) );
+		CL_ERROR_CHECK( extra_data.k.setArg(2, extra_data.out) );
+		CL_ERROR_CHECK( extra_data.k.setArg(3, extra_data.map) );
+		CL_ERROR_CHECK( extra_data.k.setArg(4, (unsigned int) elelen) );
+		CL_ERROR_CHECK( extra_data.cmdq.enqueueWriteBuffer(extra_data.map, CL_TRUE, 0, mapping_table.dataend - mapping_table.datastart, mapping_table.data) );
 		#endif
 
 		// init output mat
@@ -578,7 +730,7 @@ void process_input(const program_args &args)
 		cap_1 >> frame_2;
 		if (frame_2.empty())
 		{
-			remap<interpol_t>(frame_1, mapping_table, equiframe);
+			remap<interpol_t>(frame_1, mapping_table, equiframe, extra_data);
 			cv::imshow(WINDOW_NAME, equiframe);
 			if (!args.out_path.empty())
 				cv::imwrite(args.out_path+args.out_extension, equiframe);
@@ -586,18 +738,43 @@ void process_input(const program_args &args)
 			return;
 		}
 
+		// calculate (max) number of output frames
+		if (args.num_frames > 0)
+			args.frameskip = cap_1.get(cv::CAP_PROP_FRAME_COUNT) / args.num_frames - 1;
+		else if (args.frameskip > 0)
+			args.num_frames = cap_1.get(cv::CAP_PROP_FRAME_COUNT) / (args.frameskip + 1);
+		else
+			args.num_frames = cap_1.get(cv::CAP_PROP_FRAME_COUNT);
+
+		// calculate max number of decimal digits needed for frame index
+		if ((args.prog_mode == program_mode::INTERACTIVE || args.prog_mode == program_mode::IMAGE)
+			&& args.out_dec_len == 0)
+		{
+			string s_num_frames = to_string(args.num_frames);
+			args.out_dec_len = s_num_frames.size();
+			args.out_path += "%0" + to_string(args.out_dec_len) + 'd';
+		}
+		
 		// jump back to beginning
 		cap_1.set(cv::CAP_PROP_POS_FRAMES, 0);
 
 		// do mapping
-		if (args.vid_out)
+		switch (args.prog_mode)
 		{
-			wrt.open(args.out_path+args.out_extension, args.out_codec == 0 ? cap_1.get(cv::CAP_PROP_FOURCC) : args.out_codec, cap_1.get(cv::CAP_PROP_FPS), cv::Size(mapping_table.cols, mapping_table.rows));
-			process_video<interpol_t, true, true>(cap_1, cap_2, mapping_table, equiframe, wrt, args);
-		}
-		else
-		{
-			process_video<interpol_t, true, false>(cap_1, cap_2, mapping_table, equiframe, wrt, args);
+			case program_mode::INTERACTIVE:
+				process_video<interpol_t, true, program_mode::INTERACTIVE>(cap_1, cap_2, mapping_table, equiframe, wrt, args, extra_data);
+				break;
+			case program_mode::VIDEO:
+				wrt.open(args.out_path+args.out_extension, args.out_codec == 0 ? cap_1.get(cv::CAP_PROP_FOURCC) : args.out_codec, cap_1.get(cv::CAP_PROP_FPS), cv::Size(mapping_table.cols, mapping_table.rows));
+				process_video<interpol_t, true, program_mode::VIDEO>(cap_1, cap_2, mapping_table, equiframe, wrt, args, extra_data);
+				break;
+			case program_mode::IMAGE:
+				process_video<interpol_t, true, program_mode::IMAGE>(cap_1, cap_2, mapping_table, equiframe, wrt, args, extra_data);
+				break;
+			default:
+				cerr << "Program Mode not supported." << endl;
+				exit(EXIT_FAILURE);
+				break;
 		}
 	}
 	else // two inputs
@@ -610,17 +787,17 @@ void process_input(const program_args &args)
 		#endif
 		#ifdef WITH_OPENCL
 		size_t elelen = mapping_table.rows * mapping_table.cols;
-		cl_global_size = cl::NDRange(elelen % LOCAL_SIZE == 0 ? elelen : elelen + LOCAL_SIZE - elelen % LOCAL_SIZE);
-		cl_map = cl::Buffer(cl_ctxt, CL_MEM_READ_WRITE, mapping_table.dataend - mapping_table.datastart);
-		cl_in_1 = cl::Buffer(cl_ctxt, CL_MEM_READ_WRITE, elelen * 3);
-		cl_in_2 = cl::Buffer(cl_ctxt, CL_MEM_READ_WRITE, elelen * 3);
-		cl_out = cl::Buffer(cl_ctxt, CL_MEM_READ_WRITE, elelen * 3);
-		CL_ERROR_CHECK( cl_k.setArg(0, cl_in_1) );
-		CL_ERROR_CHECK( cl_k.setArg(1, cl_in_2) );
-		CL_ERROR_CHECK( cl_k.setArg(2, cl_out) );
-		CL_ERROR_CHECK( cl_k.setArg(3, cl_map) );
-		CL_ERROR_CHECK( cl_k.setArg(4, (unsigned int) elelen) );
-		CL_ERROR_CHECK( cl_cmdq.enqueueWriteBuffer(cl_map, CL_TRUE, 0, mapping_table.dataend - mapping_table.datastart, mapping_table.data) );
+		extra_data.global_size = cl::NDRange(elelen % extra_data::LOCAL_SIZE == 0 ? elelen : elelen + extra_data::LOCAL_SIZE - elelen % extra_data::LOCAL_SIZE);
+		extra_data.map = cl::Buffer(extra_data.ctxt, CL_MEM_READ_WRITE, mapping_table.dataend - mapping_table.datastart);
+		extra_data.in_1 = cl::Buffer(extra_data.ctxt, CL_MEM_READ_WRITE, elelen * 3);
+		extra_data.in_2 = cl::Buffer(extra_data.ctxt, CL_MEM_READ_WRITE, elelen * 3);
+		extra_data.out = cl::Buffer(extra_data.ctxt, CL_MEM_READ_WRITE, elelen * 3);
+		CL_ERROR_CHECK( extra_data.k.setArg(0, extra_data.in_1) );
+		CL_ERROR_CHECK( extra_data.k.setArg(1, extra_data.in_2) );
+		CL_ERROR_CHECK( extra_data.k.setArg(2, extra_data.out) );
+		CL_ERROR_CHECK( extra_data.k.setArg(3, extra_data.map) );
+		CL_ERROR_CHECK( extra_data.k.setArg(4, (unsigned int) elelen) );
+		CL_ERROR_CHECK( extra_data.cmdq.enqueueWriteBuffer(extra_data.map, CL_TRUE, 0, mapping_table.dataend - mapping_table.datastart, mapping_table.data) );
 		#endif
 
 		// init output mat
@@ -657,7 +834,7 @@ void process_input(const program_args &args)
 		// process single image
 		if (!cap_1.grab())
 		{
-			remap<interpol_t>(frame_1, frame_2, mapping_table, equiframe);
+			remap<interpol_t>(frame_1, frame_2, mapping_table, equiframe, extra_data);
 			cv::imshow(WINDOW_NAME, equiframe);
 			if (!args.out_path.empty())
 				cv::imwrite(args.out_path+args.out_extension, equiframe);
@@ -665,19 +842,51 @@ void process_input(const program_args &args)
 			return;
 		}
 
+		// check length
+		if (cap_1.get(cv::CAP_PROP_FRAME_COUNT) != cap_2.get(cv::CAP_PROP_FRAME_COUNT))
+		{
+			cerr << "Input 1 and 2 differ in length." << endl;
+			exit(EXIT_FAILURE);
+		}
+
+		// calculate (max) number of output frames
+		if (args.num_frames > 0)
+			args.frameskip = cap_1.get(cv::CAP_PROP_FRAME_COUNT) / args.num_frames - 1;
+		else if (args.frameskip > 0)
+			args.num_frames = cap_1.get(cv::CAP_PROP_FRAME_COUNT) / (args.frameskip + 1);
+		else
+			args.num_frames = cap_1.get(cv::CAP_PROP_FRAME_COUNT);
+
+		// calculate max number of decimal digits needed for frame index
+		if ((args.prog_mode == program_mode::INTERACTIVE || args.prog_mode == program_mode::IMAGE)
+			&& args.out_dec_len == 0)
+		{
+			string s_num_frames = to_string(args.num_frames);
+			args.out_dec_len = s_num_frames.size();
+			args.out_path += "%0" + to_string(args.out_dec_len) + 'd';
+		}
+		
 		// jump back to beginning
 		cap_1.set(cv::CAP_PROP_POS_FRAMES, 0);
 		cap_2.set(cv::CAP_PROP_POS_FRAMES, 0);
 
 		// do mapping
-		if (args.vid_out)
+		switch (args.prog_mode)
 		{
-			wrt.open(args.out_path+args.out_extension, args.out_codec == 0 ? cap_1.get(cv::CAP_PROP_FOURCC) : args.out_codec, cap_1.get(cv::CAP_PROP_FPS), cv::Size(mapping_table.cols, mapping_table.rows));
-			process_video<interpol_t, false, true>(cap_1, cap_2, mapping_table, equiframe, wrt, args);
-		}
-		else
-		{
-			process_video<interpol_t, false, false>(cap_1, cap_2, mapping_table, equiframe, wrt, args);
+			case program_mode::INTERACTIVE:
+				process_video<interpol_t, false, program_mode::INTERACTIVE>(cap_1, cap_2, mapping_table, equiframe, wrt, args, extra_data);
+				break;
+			case program_mode::VIDEO:
+				wrt.open(args.out_path+args.out_extension, args.out_codec == 0 ? cap_1.get(cv::CAP_PROP_FOURCC) : args.out_codec, cap_1.get(cv::CAP_PROP_FPS), cv::Size(mapping_table.cols, mapping_table.rows));
+				process_video<interpol_t, false, program_mode::VIDEO>(cap_1, cap_2, mapping_table, equiframe, wrt, args, extra_data);
+				break;
+			case program_mode::IMAGE:
+				process_video<interpol_t, false, program_mode::IMAGE>(cap_1, cap_2, mapping_table, equiframe, wrt, args, extra_data);
+				break;
+			default:
+				cerr << "Program Mode not supported." << endl;
+				exit(EXIT_FAILURE);
+				break;
 		}
 	}
 
@@ -695,7 +904,7 @@ int main(int argc, char **argv)
 	program_args args;
 	parse_args(argc, argv, args);
 
-	if (!args.vid_out)
+	if (args.prog_mode == program_mode::INTERACTIVE)
 	{
 		cout << "controls:\n  space, k\tplay/pause\n  .\t\tnext frame\n  ,\t\tlast frame\n"
 				"  ->\t\tjump 5s ahead\n  <-\t\tjump 5s back\n  l\t\tjump 10s ahead\n  j\t\tjump 10s back\n"
@@ -721,3 +930,312 @@ int main(int argc, char **argv)
 
 	return EXIT_SUCCESS;
 }
+
+template <bool single_input>
+void mapper::init(interpolation_type interpol_t, size_t buffer_length)
+{
+	this->buffer_length = buffer_length;
+	this->read_pos = buffer_length;
+	this->write_pos = 0;
+
+	this->unread = new atomic_bool[buffer_length + 1];
+	this->unwritten = new atomic_bool[buffer_length];
+	this->out = new cv::Mat[buffer_length];
+
+	for (size_t i = 0; i < buffer_length; i++)
+	{
+		this->out[i].create(this->map.rows, this->map.cols, CV_8UC3);
+		this->unwritten[i] = true;
+		this->unread[i] = false;
+	}
+	
+	this->alive = true;
+	this->running = true;
+	this->good = true;
+
+	#ifdef WITH_OPENCL
+	this->edata.ctxt = cl::Context(CL_DEVICE_TYPE_GPU);
+	this->edata.cmdq = cl::CommandQueue(this->edata.ctxt);
+	this->edata.prog = cl::Program(this->edata.ctxt, string((char*) src_mapping_cl, src_mapping_cl_len), true);
+	
+	size_t elelen = this->map.rows * this->map.cols;
+	this->edata.global_size = cl::NDRange(elelen % extra_data::LOCAL_SIZE == 0 ? elelen : elelen + extra_data::LOCAL_SIZE - elelen % extra_data::LOCAL_SIZE);
+	this->edata.map = cl::Buffer(this->edata.ctxt, CL_MEM_READ_WRITE, this->map.dataend - this->map.datastart);
+	if constexpr (single_input)
+		this->edata.in_1 = cl::Buffer(this->edata.ctxt, CL_MEM_READ_WRITE, elelen * 3);
+	else
+	{
+		this->edata.in_1 = cl::Buffer(this->edata.ctxt, CL_MEM_READ_WRITE, elelen * 3 / 2);
+		this->edata.in_2 = cl::Buffer(this->edata.ctxt, CL_MEM_READ_WRITE, elelen * 3 / 2);
+	}
+	this->edata.out = cl::Buffer(this->edata.ctxt, CL_MEM_READ_WRITE, elelen * 3);
+	switch (interpol_t)
+	{
+	case interpolation_type::NEAREST_NEIGHBOUR:
+		this->edata.k = cl::Kernel(this->edata.prog, "remap_nn");
+		break;
+	case interpolation_type::BILINEAR:
+		this->edata.k = cl::Kernel(this->edata.prog, "remap_li");
+		break;
+	default:
+		throw invalid_argument("Interpolation type not supported.");
+		break;
+	}
+	CL_ERROR_CHECK( this->edata.k.setArg(0, this->edata.in_1) );
+	if constexpr (single_input)
+	{
+		CL_ERROR_CHECK( this->edata.k.setArg(1, this->edata.in_1) );
+	}
+	else
+	{
+		CL_ERROR_CHECK( this->edata.k.setArg(1, this->edata.in_2) );
+	}
+	CL_ERROR_CHECK( this->edata.k.setArg(2, this->edata.out) );
+	CL_ERROR_CHECK( this->edata.k.setArg(3, this->edata.map) );
+	CL_ERROR_CHECK( this->edata.k.setArg(4, (unsigned int) elelen) );
+	CL_ERROR_CHECK( this->edata.cmdq.enqueueWriteBuffer(this->edata.map, CL_TRUE, 0, this->map.dataend - this->map.datastart, this->map.data) );
+	#endif
+
+	switch (interpol_t)
+	{
+	case interpolation_type::NEAREST_NEIGHBOUR:
+		this->worker = std::thread(&mapper::process<interpolation_type::NEAREST_NEIGHBOUR, single_input>, this);
+		break;
+	case interpolation_type::BILINEAR:
+		this->worker = std::thread(&mapper::process<interpolation_type::BILINEAR, single_input>, this);
+		break;
+	default:
+		throw invalid_argument("Interpolation type not supported.");
+		break;
+	}
+}
+
+mapper::mapper(cv::VideoCapture &in, const cv::Mat map, size_t frameskip, interpolation_type interpol_t, size_t buffer_length)
+{
+	this->cap_1 = in;
+	if (!this->cap_1.isOpened())
+		throw invalid_argument("VideoCapture Object isn't opened.");
+
+	this->map = map;
+	if (this->map.cols != (int) this->cap_1.get(cv::CAP_PROP_FRAME_WIDTH) * 2 || this->map.rows != (int) this->cap_1.get(cv::CAP_PROP_FRAME_HEIGHT))
+		throw invalid_argument("Input and mappingtable differ in size.");
+
+	this->frameskip = frameskip;
+
+	this->init<true>(interpol_t, buffer_length);
+}
+
+mapper::mapper(cv::VideoCapture &in_1, cv::VideoCapture in_2, const cv::Mat map, size_t frameskip, interpolation_type interpol_t, size_t buffer_length)
+{
+	this->cap_1 = in_1;
+	if (!this->cap_1.isOpened())
+		throw invalid_argument("VideoCapture Object in_1 isn't opened.");
+	if (!this->cap_2.isOpened())
+		throw invalid_argument("VideoCapture Object in_2 isn't opened.");
+	if (this->cap_1.get(cv::CAP_PROP_FRAME_WIDTH) != this->cap_2.get(cv::CAP_PROP_FRAME_WIDTH)
+		|| this->cap_1.get(cv::CAP_PROP_FRAME_HEIGHT) != this->cap_2.get(cv::CAP_PROP_FRAME_HEIGHT))
+		throw invalid_argument("Input \"in_1\" and \"in_2\" differ in size.");
+
+	this->map = map;
+	if (this->map.cols != (int) this->cap_1.get(cv::CAP_PROP_FRAME_WIDTH) * 2 || this->map.rows != (int) this->cap_1.get(cv::CAP_PROP_FRAME_HEIGHT))
+		throw invalid_argument("Inputs and mappingtable differ in size.");
+
+	this->frameskip = frameskip;
+
+	this->init<false>(interpol_t, buffer_length);
+}
+
+mapper::mapper(const std::string &in_path, const std::string &map_path, size_t frameskip, interpolation_type interpol_t, size_t buffer_length)
+{
+	if (!this->cap_1.open(in_path))
+		throw invalid_argument('"' + in_path + "\" is can't be opened for reading.");
+
+	switch (interpol_t)
+	{
+	case interpolation_type::NEAREST_NEIGHBOUR:
+		read_mapping_file<interpolation_type::NEAREST_NEIGHBOUR, true>(map_path, this->map);
+		break;
+	case interpolation_type::BILINEAR:
+		read_mapping_file<interpolation_type::BILINEAR, true>(map_path, this->map);
+		break;
+	default:
+		throw invalid_argument("Interpolation type not supported.");
+		break;
+	}
+
+	if (this->map.cols != (int) this->cap_1.get(cv::CAP_PROP_FRAME_WIDTH) || this->map.rows != (int) this->cap_1.get(cv::CAP_PROP_FRAME_HEIGHT))
+		throw invalid_argument("Input \"" + in_path + "\" and mappingtable: \"" + map_path + "\" differ in size.");
+
+	this->frameskip = frameskip;
+
+	this->init<true>(interpol_t, buffer_length);
+}
+
+mapper::mapper(const std::string &in_path_1, const std::string &in_path_2, const std::string &map_path, size_t frameskip, interpolation_type interpol_t, size_t buffer_length)
+{
+	if (!this->cap_1.open(in_path_1))
+		throw invalid_argument('"' + in_path_1 + "\" is can't be opened for reading.");
+	if (!this->cap_2.open(in_path_2))
+		throw invalid_argument('"' + in_path_2 + "\" is can't be opened for reading.");
+	if (this->cap_1.get(cv::CAP_PROP_FRAME_WIDTH) != this->cap_2.get(cv::CAP_PROP_FRAME_WIDTH)
+		|| this->cap_1.get(cv::CAP_PROP_FRAME_HEIGHT) != this->cap_2.get(cv::CAP_PROP_FRAME_HEIGHT))
+		throw invalid_argument("Input \"" + in_path_1 + "\" and \"" + in_path_2 + "\" differ in size.");
+	
+	switch (interpol_t)
+	{
+	case interpolation_type::NEAREST_NEIGHBOUR:
+		read_mapping_file<interpolation_type::NEAREST_NEIGHBOUR, false>(map_path, this->map);
+		break;
+	case interpolation_type::BILINEAR:
+		read_mapping_file<interpolation_type::BILINEAR, false>(map_path, this->map);
+		break;
+	default:
+		throw invalid_argument("Interpolation type not supported.");
+		break;
+	}
+
+	if (this->map.cols != (int) this->cap_1.get(cv::CAP_PROP_FRAME_WIDTH) * 2 || this->map.rows != (int) this->cap_1.get(cv::CAP_PROP_FRAME_HEIGHT))
+		throw invalid_argument("Inputs and mappingtable: \"" + map_path + "\" differ in size.");
+
+	this->frameskip = frameskip;
+
+	this->init<false>(interpol_t, buffer_length);
+}
+
+mapper::~mapper()
+{
+	this->alive = false;
+	this->worker.join();
+	this->cap_1.release();
+	this->cap_2.release();
+	delete[] this->unread;
+	delete[] this->unwritten;
+	delete[] this->out;
+}
+
+template <interpolation_type interpol_t, bool single_input>
+void mapper::process()
+{
+	TIMES( chrono::steady_clock::time_point get_s, get_e, map_s, map_e; double get_sum = 0, map_sum = 0; long fc = 0; )
+	while (this->alive)
+	{
+		if (this->running)
+		{
+			this->cap_lock.lock();
+			TIMES( get_s = chrono::steady_clock::now(); )
+			if constexpr (single_input)
+			{
+				this->good = this->cap_1.read(this->in_1);
+				for (unsigned char i = 0; i < this->frameskip; i++) 
+				{
+					this->cap_1.grab();
+				}
+			}
+			else
+			{
+				this->good = this->cap_1.read(this->in_1) && this->cap_2.read(this->in_2);
+				for (unsigned char i = 0; i < this->frameskip; i++)
+				{
+					this->cap_1.grab();
+					this->cap_2.grab();
+				}
+			}
+			TIMES( get_e = chrono::steady_clock::now(); get_sum += std::chrono::duration_cast<std::chrono::duration<double>>(get_e - get_s).count(); )
+			this->cap_lock.unlock();
+
+			if (this->good)
+			{
+				while (this->unread[this->write_pos].exchange(true))
+				{
+					if (!this->alive) return;
+					this_thread::sleep_for(1ms);
+				}
+				
+				DBG( printf("process: r%lu locked\n", this->write_pos); )
+				TIMES( map_s = chrono::steady_clock::now(); )
+				if constexpr (single_input)
+					remap<interpol_t>(this->in_1, this->map, this->out[this->write_pos], this->edata);
+				else
+					remap<interpol_t>(this->in_1, this->in_2, this->map, this->out[this->write_pos], this->edata);
+				TIMES( map_e = chrono::steady_clock::now(); map_sum += std::chrono::duration_cast<std::chrono::duration<double>>(map_e - map_s).count(); )
+				this->unwritten[this->write_pos] = false;
+				DBG( printf("process: w%lu unlocked\n", this->write_pos); )
+				if (++this->write_pos == this->buffer_length)
+					this->write_pos = 0;
+				TIMES( fc++; if (fc % 150 == 0) {printf("\nframe: %ld\nget=%fms\nmap=%fms\n", fc, get_sum / fc * 1000, map_sum / fc * 1000);} )
+			}
+		}
+		else
+		{
+			this_thread::sleep_for(100ms);
+		}
+	}
+}
+
+bool mapper::get_next_img(cv::Mat &img)
+{
+	this->unread[this->read_pos] = false;
+	DBG( printf("getimg: r%lu unlocked\n", this->read_pos); )
+	if (++this->read_pos >= this->buffer_length)
+		this->read_pos = 0;
+
+	bool lk;
+	while ((lk = this->unwritten[this->read_pos].exchange(true)) && this->good)
+		this_thread::sleep_for(1ms);
+	if (!lk)
+	{
+		DBG( printf("getimg: w%lu locked\n", this->read_pos); )
+		img = this->out[this->read_pos];
+		return true;
+	}
+	else
+		return false;
+}
+
+bool mapper::copy_next_img(cv::Mat &img)
+{
+	cv::Mat temp;
+	bool ret = this->get_next_img(temp);
+	img = temp.clone();
+	return ret;
+}
+
+bool mapper::jump_mseconds(int ms)
+{
+	this->cap_lock.lock();
+	bool ret = this->cap_1.set(cv::CAP_PROP_POS_MSEC, this->cap_1.get(cv::CAP_PROP_POS_MSEC) + ms)
+		&& this->cap_2.isOpened()
+		 ? this->cap_2.set(cv::CAP_PROP_POS_MSEC, this->cap_2.get(cv::CAP_PROP_POS_MSEC) + ms)
+		 : true;
+	this->cap_lock.unlock();
+	return ret;
+}
+
+bool mapper::jump_frames(int frames)
+{
+	this->cap_lock.lock();
+	bool ret = this->cap_1.set(cv::CAP_PROP_POS_FRAMES, this->cap_1.get(cv::CAP_PROP_POS_FRAMES) + frames - 1)
+		&& this->cap_2.isOpened()
+		 ? this->cap_2.set(cv::CAP_PROP_POS_FRAMES, this->cap_2.get(cv::CAP_PROP_POS_FRAMES) + frames - 1)
+		 : true;
+	this->cap_lock.unlock();
+	return ret;
+}
+
+void mapper::set_frameskip(size_t frames)
+{
+	this->cap_lock.lock();
+	this->frameskip = frames;
+	this->cap_lock.unlock();
+}
+
+size_t mapper::get_frameskip()
+{
+	this->cap_lock.lock();
+	size_t frames = this->frameskip;
+	this->cap_lock.unlock();
+	return frames;
+}
+
+void mapper::start() { this->running = true; }
+void mapper::stop() { this->running = false; }

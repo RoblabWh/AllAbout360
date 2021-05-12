@@ -18,7 +18,8 @@ endif()
 include_directories(${OpenCV_INCLUDE_DIRS})
 
 # set compile options
-set(CMAKE_CXX_FLAGS "-std=gnu++17")
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED True)
 set(CMAKE_CXX_FLAGS_DEBUG "-Wall -g -DDEBUG")
 set(CMAKE_CUDA_FLAGS_DEBUG "-DDEBUG")
 set(CMAKE_CXX_FLAGS_RELEASE "-O3")
@@ -26,30 +27,64 @@ set(CMAKE_CXX_FLAGS_RELEASE "-O3")
 #----------------------------------------------------------------------------------#
 # Functions to compile with different frameworks
 #----------------------------------------------------------------------------------#
+function(mapping_serial target_name)
+	add_executable(${target_name}-mapper src/mapping.cpp)
+	add_library(${target_name}-mapping SHARED src/mapping.cpp)
+	target_link_libraries(${target_name}-mapper ${OpenCV_LIBS} -lpthread)
+	target_link_libraries(${target_name}-mapping ${OpenCV_LIBS})
+endfunction()
+
 function(mapping_with_openmp target_name)
-	add_executable(${target_name} src/mapping.cpp)
-	if (OpenMP_CXX_FOUND)
-		target_link_libraries(${target_name} PUBLIC OpenMP::OpenMP_CXX ${OpenCV_LIBS})
+	if(OpenMP_CXX_FOUND)
+		add_executable(${target_name}-mapper src/mapping.cpp)
+		add_library(${target_name}-mapping SHARED src/mapping.cpp)
+		target_link_libraries(${target_name}-mapper PUBLIC OpenMP::OpenMP_CXX ${OpenCV_LIBS} -lpthread)
+		target_link_libraries(${target_name}-mapping PUBLIC OpenMP::OpenMP_CXX ${OpenCV_LIBS})
 	else()
-		target_link_libraries(${target_name} ${OpenCV_LIBS})
+		message("OpenMP not available")
 	endif()
 endfunction()
 
 function(mapping_with_cuda target_name)
-	add_executable(${target_name} src/mapping.cpp src/mapping.h src/mapping.cu)
-	target_link_libraries(${target_name} ${OpenCV_LIBS})
-	target_compile_definitions(${target_name} PUBLIC ON_GPU WITH_CUDA)
+	if(CMAKE_CUDA_COMPILER)
+		add_executable(${target_name}-mapper src/mapping.cpp src/mapping.cu)
+		target_link_libraries(${target_name}-mapper PUBLIC ${OpenCV_LIBS} -lpthread)
+		target_compile_definitions(${target_name}-mapper PUBLIC ON_GPU WITH_CUDA)
+
+		message("Library support is currently not available for CUDA.")
+		# add_library(${target_name}-mapping SHARED src/mapping.cpp src/mapping.cu)
+		# target_link_libraries(${target_name}-mapping PUBLIC ${OpenCV_LIBS})
+		# target_compile_definitions(${target_name}-mapping PUBLIC ON_GPU WITH_CUDA)
+	else()
+		message("CUDA not available")
+	endif()
 endfunction()
 
 function(mapping_with_opencl target_name)
-	include_directories(${OpenCL_INCLUDE_DIRS} build)
-	add_custom_command(OUTPUT build/mapping.cl.h
-					   COMMAND xxd -i src/mapping.cl > build/mapping.cl.h
-					   DEPENDS src/mapping.cl
-					   WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
-	add_executable(${target_name} src/mapping.cpp build/mapping.cl.h)
-	target_link_libraries(${target_name} ${OpenCV_LIBS} ${OpenCL_LIBRARIES})
-	target_compile_definitions(${target_name} PUBLIC ON_GPU WITH_OPENCL)
+	if(OpenCL_FOUND)
+		include_directories(${OpenCL_INCLUDE_DIRS} build)
+		add_custom_command(OUTPUT build/mapping.cl.h
+						COMMAND printf \"\#ifndef MAPPING_CL_H\\n\#define MAPPING_CL_H\\n\" > build/mapping.cl.h
+						COMMAND xxd -i src/mapping.cl >> build/mapping.cl.h
+						COMMAND printf \"\#endif\\n\" >> build/mapping.cl.h
+						COMMAND sed -i 's\\unsigned\\static unsigned\\g' build/mapping.cl.h
+						DEPENDS src/mapping.cl
+						WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
+		add_custom_target(generate-mapping.cl.h DEPENDS build/mapping.cl.h)
+		
+		add_executable(${target_name}-mapper src/mapping.cpp)
+		target_link_libraries(${target_name}-mapper PRIVATE ${OpenCV_LIBS} ${OpenCL_LIBRARIES} -lpthread)
+		target_compile_definitions(${target_name}-mapper PUBLIC ON_GPU WITH_OPENCL)
+		add_dependencies(${target_name}-mapper generate-mapping.cl.h)
+
+		add_library(${target_name}-mapping SHARED src/mapping.cpp)
+		target_link_libraries(${target_name}-mapping ${OpenCV_LIBS} ${OpenCL_LIBRARIES})
+		target_compile_definitions(${target_name}-mapping PUBLIC ON_GPU WITH_OPENCL)
+		add_dependencies(${target_name}-mapping generate-mapping.cl.h)
+	else()
+		message("OpenCL not available")
+	endif()
+	
 endfunction()
 
 #----------------------------------------------------------------------------------#
@@ -60,60 +95,64 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 option(PRINT_TIMES "Print frametimes" NO)
+string(TOUPPER ${PRINT_TIMES} PRINT_TIMES)
 if (${PRINT_TIMES})
 	add_compile_options(-DPRINT_TIMES)
 endif()
 
-set(PARALLELIZATION_FRAMEWORK DEFAULT CACHE STRING "Parallelization framework to compile with.")
-string(TOUPPER ${PARALLELIZATION_FRAMEWORK} PARALLELIZATION_FRAMEWORK)
+set(PARALLELIZATION DEFAULT CACHE STRING "Parallelization framework to compile with.")
+string(TOUPPER ${PARALLELIZATION} PARALLELIZATION)
 
 # auto select best framework
-if(${PARALLELIZATION_FRAMEWORK} STREQUAL "DEFAULT")
-	if(CMAKE_CUDA_COMPILER)
-		set(PARALLELIZATION_FRAMEWORK "CUDA")
-	elseif(OpenCL_FOUND)
-		set(PARALLELIZATION_FRAMEWORK "CL")
+if(${PARALLELIZATION} STREQUAL "DEFAULT")
+	if(OpenCL_FOUND)
+		set(PARALLELIZATION "CL")
+	elseif(CMAKE_CUDA_COMPILER)
+		set(PARALLELIZATION "CUDA")
+	elseif (OpenMP_CXX_FOUND)
+		set(PARALLELIZATION "OMP")
 	else()
-		set(PARALLELIZATION_FRAMEWORK "OMP")
+		set(PARALLELIZATION "OFF")
 	endif()
 endif()
 
 # print configuration
-message("\nCMake build type: " ${CMAKE_BUILD_TYPE}
-		"\nParallelization framework: " ${PARALLELIZATION_FRAMEWORK}
-		"\nPrint times: " ${PRINT_TIMES} "\n")
+message("<------ Configuration ------>"
+		"\nCMake Build Type: " ${CMAKE_BUILD_TYPE}
+		"\nParallelization: " ${PARALLELIZATION}
+		"\nPrint Times: " ${PRINT_TIMES}
+		"\n<------- Information ------->")
 
 # create selected mapping target
-if(${PARALLELIZATION_FRAMEWORK} STREQUAL "ALL")
-	if(OpenMP_CXX_FOUND)
-		mapping_with_openmp(${PROJECT_NAME}-mapping-omp)
-	else()
-		message("OpenMP not available")
-	endif()
-	if(CMAKE_CUDA_COMPILER)
-		mapping_with_cuda(${PROJECT_NAME}-mapping-cuda)
-		else()
-			message("CUDA not available")
-	endif()
-	if(OpenCL_FOUND)
-		mapping_with_opencl(${PROJECT_NAME}-mapping-cl)
-		else()
-			message("OpenCL not available")
-	endif()
-elseif(${PARALLELIZATION_FRAMEWORK} STREQUAL "OPENMP" OR ${PARALLELIZATION_FRAMEWORK} STREQUAL "OMP")
-	mapping_with_openmp(${PROJECT_NAME}-mapping)
-elseif(${PARALLELIZATION_FRAMEWORK} STREQUAL "CUDA")
-	mapping_with_cuda(${PROJECT_NAME}-mapping)
-elseif(${PARALLELIZATION_FRAMEWORK} STREQUAL "OPENCL" OR ${PARALLELIZATION_FRAMEWORK} STREQUAL "CL")
-	mapping_with_opencl(${PROJECT_NAME}-mapping)
+if(${PARALLELIZATION} STREQUAL "ALL")
+	mapping_serial(${PROJECT_NAME})
+	mapping_with_openmp(${PROJECT_NAME}-omp)
+	mapping_with_cuda(${PROJECT_NAME}-cuda)
+	mapping_with_opencl(${PROJECT_NAME}-cl)
+elseif(${PARALLELIZATION} STREQUAL "OFF")
+	mapping_serial(${PROJECT_NAME})
+elseif(${PARALLELIZATION} STREQUAL "OPENMP" OR ${PARALLELIZATION} STREQUAL "OMP")
+	mapping_with_openmp(${PROJECT_NAME})
+elseif(${PARALLELIZATION} STREQUAL "CUDA")
+	mapping_with_cuda(${PROJECT_NAME})
+elseif(${PARALLELIZATION} STREQUAL "OPENCL" OR ${PARALLELIZATION} STREQUAL "CL")
+	mapping_with_opencl(${PROJECT_NAME})
 else()
-	message(${PARALLELIZATION_FRAMEWORK} " is not supported.")
+	message(${PARALLELIZATION} " is not supported.")
 endif()
+
+message("<--------------------------->")
 
 # create calibration target
 add_executable(${PROJECT_NAME}-calibration src/calibration.cpp)
 if (OpenMP_CXX_FOUND)
-	target_link_libraries(${PROJECT_NAME}-calibration PUBLIC OpenMP::OpenMP_CXX ${OpenCV_LIBS})
+	target_link_libraries(${PROJECT_NAME}-calibration OpenMP::OpenMP_CXX ${OpenCV_LIBS})
 else()
 	target_link_libraries(${PROJECT_NAME}-calibration ${OpenCV_LIBS})
+endif()
+
+# create example usage
+if (NOT ${PARALLELIZATION} STREQUAL "CUDA")
+	add_executable(example src/example.cpp)
+	target_link_libraries(example ${PROJECT_NAME}-mapping)
 endif()

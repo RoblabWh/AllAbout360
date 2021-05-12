@@ -1,6 +1,17 @@
 #ifndef MAPPING_H
 #define MAPPING_H
 
+#include <string>
+#include <thread>
+#include <mutex>
+#include <atomic>
+
+#include <opencv2/opencv.hpp>
+
+#ifdef WITH_OPENCL
+#include <CL/cl2.hpp>
+#endif
+
 #ifdef DEBUG
 #define DBG(E...) E
 #else
@@ -18,6 +29,110 @@ enum interpolation_type
 	NEAREST_NEIGHBOUR,
 	BILINEAR,
 	BICUBIC
+};
+
+#ifdef WITH_CUDA
+struct extra_data
+{
+	
+};
+#else
+#ifdef WITH_OPENCL
+struct extra_data
+{
+	static const size_t LOCAL_SIZE = 1024;
+	cl::Context ctxt;
+	cl::CommandQueue cmdq;
+	cl::Program prog;
+	cl::Kernel k;
+	cl::Buffer map;
+	cl::Buffer in_1;
+	cl::Buffer in_2;
+	cl::Buffer out;
+	cl::NDRange local_size = cl::NDRange(LOCAL_SIZE);
+	cl::NDRange global_size;
+};
+#else
+struct extra_data {};
+#endif
+#endif
+
+class mapper //TODO CUDA
+{
+private:
+	cv::VideoCapture cap_1, cap_2;
+	cv::Mat in_1, in_2, map, *out;
+	std::thread worker;
+	std::mutex cap_lock;
+	std::atomic_bool *unread, *unwritten;
+	size_t read_pos, write_pos, buffer_length, frameskip;
+	std::atomic_bool running, alive, good;
+	extra_data edata;
+
+	static const size_t DEFAULT_BUFFER_LENGTH = 2;
+
+	template <bool single_input> void init(interpolation_type interpol_t, size_t buffer_length);
+	template <interpolation_type interpol_t, bool single_input> void process();
+
+public:
+	mapper(cv::VideoCapture &in, const cv::Mat map, size_t frameskip = 0, interpolation_type interpol_t = interpolation_type::NEAREST_NEIGHBOUR, size_t buffer_length = mapper::DEFAULT_BUFFER_LENGTH);
+	mapper(cv::VideoCapture &in_1, cv::VideoCapture in_2, const cv::Mat map, size_t frameskip = 0, interpolation_type interpol_t = interpolation_type::NEAREST_NEIGHBOUR, size_t buffer_length = mapper::DEFAULT_BUFFER_LENGTH);
+	mapper(const std::string &in_path, const std::string &map_path, size_t frameskip = 0, interpolation_type interpol_t = interpolation_type::NEAREST_NEIGHBOUR, size_t buffer_length = mapper::DEFAULT_BUFFER_LENGTH);
+	mapper(const std::string &in_path_1, const std::string &in_path_2, const std::string &map_path, size_t frameskip = 0, interpolation_type interpol_t = interpolation_type::NEAREST_NEIGHBOUR, size_t buffer_length = mapper::DEFAULT_BUFFER_LENGTH);
+	~mapper();
+
+	/**
+	 * @brief Get the next image. WARNING! img.data is only valid until next call of this function!
+	 * 
+	 * @param img Output image
+	 * @return true Got image successfully.
+	 * @return false Could not get new image.
+	 */
+	bool get_next_img(cv::Mat &img);
+	/**
+	 * @brief Get the next image as copy.
+	 * 
+	 * @param img Output image
+	 * @return true Got image successfully.
+	 * @return false Could not get new image.
+	 */
+	bool copy_next_img(cv::Mat &img);
+	/**
+	 * @brief Jumps if input supports it. WARNING! jumps are relative to the worker thread position and the already done buffered images are not cleared!
+	 * 
+	 * @param ms Milliseconds to jump.
+	 * @return true Jumping is supported.
+	 * @return false Jumping is not supported.
+	 */
+	bool jump_mseconds(int ms);
+	/**
+	 * @brief Jumps if input supports it. WARNING! jumps are relative to the worker thread position and the already done buffered images are not cleared!
+	 * 
+	 * @param frames Frmaes to jump.
+	 * @return true Jumping is supported.
+	 * @return false Jumping is not supported.
+	 */
+	bool jump_frames(int frames);
+	/**
+	 * @brief Set the frameskip
+	 * 
+	 * @param frames Number of frames to skip.
+	 */
+	void set_frameskip(size_t frames);
+	/**
+	 * @brief Get the frameskip
+	 * 
+	 * @return size_t Number of frames to skip.
+	 */
+	size_t get_frameskip();
+	/**
+	 * @brief Sets the worker thread to running.
+	 */
+	void start();
+	/**
+	 * @brief Sets the worker thread to paused.
+	 */
+	void stop();
 };
 
 #ifdef WITH_CUDA
@@ -40,93 +155,6 @@ void cuda_remap_nn(const unsigned char *in, unsigned char *out);
 void cuda_remap_li(const unsigned char *in, unsigned char *out);
 void cuda_remap_nn(const unsigned char *in_1, const unsigned char *in_2, unsigned char *out);
 void cuda_remap_li(const unsigned char *in_1, const unsigned char *in_2, unsigned char *out);
-#endif
-
-#ifdef WITH_OPENCL
-#include <CL/cl.hpp>
-const char *clGetErrorString(cl_int error)
-{
-	static const char* error_codes[] =
-	{
-		"CL_SUCCESS",                                   //  0
-		"CL_DEVICE_NOT_FOUND",                          // -1
-		"CL_DEVICE_NOT_AVAILABLE",                      // -2
-		"CL_COMPILER_NOT_AVAILABLE",                    // -3
-		"CL_MEM_OBJECT_ALLOCATION_FAILURE",             // -4
-		"CL_OUT_OF_RESOURCES",                          // -5
-		"CL_OUT_OF_HOST_MEMORY",                        // -6
-		"CL_PROFILING_INFO_NOT_AVAILABLE",              // -7
-		"CL_MEM_COPY_OVERLAP",                          // -8
-		"CL_IMAGE_FORMAT_MISMATCH",                     // -9
-		"CL_IMAGE_FORMAT_NOT_SUPPORTED",                // -10
-		"CL_BUILD_PROGRAM_FAILURE",                     // -11
-		"CL_MAP_FAILURE",                               // -12
-		"CL_MISALIGNED_SUB_BUFFER_OFFSET",              // -13
-		"CL_EXEC_STATUS_ERROR_FOR_EVENTS_IN_WAIT_LIST", // -14
-		"CL_COMPILE_PROGRAM_FAILURE",                   // -15
-		"CL_LINKER_NOT_AVAILABLE",                      // -16
-		"CL_LINK_PROGRAM_FAILURE",                      // -17
-		"CL_DEVICE_PARTITION_FAILED",                   // -18
-		"CL_KERNEL_ARG_INFO_NOT_AVAILABLE",             // -19
-		"",                                             // -20
-		"",                                             // -21
-		"",                                             // -22
-		"",                                             // -23
-		"",                                             // -24
-		"",                                             // -25
-		"",                                             // -26
-		"",                                             // -27
-		"",                                             // -28
-		"",                                             // -29
-		"CL_INVALID_VALUE",                             // -30
-		"CL_INVALID_DEVICE_TYPE",                       // -31
-		"CL_INVALID_PLATFORM",                          // -32
-		"CL_INVALID_DEVICE",                            // -33
-		"CL_INVALID_CONTEXT",                           // -34
-		"CL_INVALID_QUEUE_PROPERTIES",                  // -35
-		"CL_INVALID_COMMAND_QUEUE",                     // -36
-		"CL_INVALID_HOST_PTR",                          // -37
-		"CL_INVALID_MEM_OBJECT",                        // -38
-		"CL_INVALID_IMAGE_FORMAT_DESCRIPTOR",           // -39
-		"CL_INVALID_IMAGE_SIZE",                        // -40
-		"CL_INVALID_SAMPLER",                           // -41
-		"CL_INVALID_BINARY",                            // -42
-		"CL_INVALID_BUILD_OPTIONS",                     // -43
-		"CL_INVALID_PROGRAM",                           // -44
-		"CL_INVALID_PROGRAM_EXECUTABLE",                // -45
-		"CL_INVALID_KERNEL_NAME",                       // -46
-		"CL_INVALID_KERNEL_DEFINITION",                 // -47
-		"CL_INVALID_KERNEL",                            // -48
-		"CL_INVALID_ARG_INDEX",                         // -49
-		"CL_INVALID_ARG_VALUE",                         // -50
-		"CL_INVALID_ARG_SIZE",                          // -51
-		"CL_INVALID_KERNEL_ARGS",                       // -52
-		"CL_INVALID_WORK_DIMENSION",                    // -53
-		"CL_INVALID_WORK_GROUP_SIZE",                   // -54
-		"CL_INVALID_WORK_ITEM_SIZE",                    // -55
-		"CL_INVALID_GLOBAL_OFFSET",                     // -56
-		"CL_INVALID_EVENT_WAIT_LIST",                   // -57
-		"CL_INVALID_EVENT",                             // -58
-		"CL_INVALID_OPERATION",                         // -59
-		"CL_INVALID_GL_OBJECT",                         // -60
-		"CL_INVALID_BUFFER_SIZE",                       // -61
-		"CL_INVALID_MIP_LEVEL",                         // -62
-		"CL_INVALID_GLOBAL_WORK_SIZE",                  // -63
-		"CL_INVALID_PROPERTY",                          // -64
-		"CL_INVALID_IMAGE_DESCRIPTOR",                  // -65
-		"CL_INVALID_COMPILER_OPTIONS",                  // -66
-		"CL_INVALID_LINKER_OPTIONS",                    // -67
-		"CL_INVALID_DEVICE_PARTITION_COUNT"             // -68
-	};
-
-	error = -error;
-	if (error < 0 || error > 68 || (error > 19 && error < 30))
-		return "Unknown error";
-	else if (error == 0)
-		return "No error";
-	else
-		return error_codes[error];
-}
 #endif
 
 #endif

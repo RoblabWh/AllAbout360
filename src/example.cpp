@@ -21,7 +21,7 @@ int main(int argc, char **argv)
 	TIMES( chrono::steady_clock::time_point lo_s, lo_e; double lo_sum; long fc = 0; )
 
 	cv::namedWindow("Remapped", cv::WINDOW_KEEPRATIO);
-	cv::resizeWindow("Remapped", cv::Size(1440, 720));
+	cv::resizeWindow("Remapped", 1440, 720);
 
 	bool good = true;
 	while (cv::waitKey(1) < 0 && good)

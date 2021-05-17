@@ -41,12 +41,23 @@ const string SLIDER_ROT_NAME = string("rot = ((slider - ") + to_string(SLIDER_RO
 const string SLIDER_FOV_NAME = string("fov = (") + to_string(FOV_DEFAULT) + string(" + slider - ") + to_string(SLIDER_FOV_DEFAULT) + ")°";
 const string SLIDER_BLEND_NAME = string("blend size = (slider * 2)°");
 
+const string DEFAULT_OUTPUT_FILE = "mapping-table.txt";
+
 const char CAMERA_FRONT_WINDOW_NAME[] = "Camera front";
 const char CAMERA_REAR_WINDOW_NAME[] = "Camera rear";
 const char PREVIEW_WINDOW_NAME[] = "Preview";
 const char HELP_DIALOG[] = " (<file> | <file_front> <file_rear>) [--resolution -r <width> <height>] [--fps -f <fps>] [--codec -c <fourcc>]"
 						   " [--parameters -p <x_offset_front> <y_offset_front> <rotation_front> <fov_front>"
-						   " <radius_front> <x_offset_rear> <y_offset_rear> <rotation_rear> <radius_rear> <fov_rear>] [--floating-point -fp]";
+						   " <radius_front> <x_offset_rear> <y_offset_rear> <rotation_rear> <radius_rear> <fov_rear>] [--opencv -cv | --integer -i]\n\n"
+						   "Options:\n"
+						   "  --output      -o   mapping table output file\n"
+						   "  --parameters  -p   set the inital slider parameters\n"
+						   "  --opencv      -cv  output in OpenCV remap format double[x, y]\n"
+						   "  --integer     -i   output in integer format int[x, y]\n"
+						   " For usage with cameras:\n"
+						   "  --resolution  -r   set the camera resolution\n"
+						   "  --fps         -f   set the camera framerate\n"
+						   "  --codec       -c   set the camera codec in fourcc format\n";
 
 enum mapping_table_format
 {
@@ -79,6 +90,7 @@ struct calib_slider_params
 struct program_args
 {
 	char *file, *file_front, *file_rear, *fourcc_str;
+	string output_file = DEFAULT_OUTPUT_FILE;
 	int width, height, fps, fourcc;
 	calib_slider_params *params;
 	bool is_single_input, has_resolution, has_fps, has_fourcc, has_parameters;
@@ -370,16 +382,36 @@ void parse_args(int argc, char **argv, program_args *args)
 		}
 		else if (strcmp(argv[i], "-cv") == 0 || strcmp(argv[i], "--opencv") == 0)
 		{
+			if (args->format != mapping_table_format::FULL)
+			{
+				cout << "Only one output format can be sat at a time." << endl;
+				exit(1);
+			}
 			args->format = mapping_table_format::OPENCV;
 		}
 		else if (strcmp(argv[i], "-i") == 0 || strcmp(argv[i], "--integer") == 0)
 		{
+			if (args->format != mapping_table_format::FULL)
+			{
+				cout << "Only one output format can be sat at a time." << endl;
+				exit(1);
+			}
 			args->format = mapping_table_format::INTEGER;
 		}
 		else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0)
 		{
 			cout << argv[0] << HELP_DIALOG << endl;
 			exit(0);
+		}
+		else if (strcmp(argv[i], "-o") == 0 || strcmp(argv[i], "--output") == 0)
+		{
+			i++;
+			if (i >= argc)
+			{
+				cout << "No output provided." << endl;
+				exit(1);
+			}
+			args->output_file = argv[i];
 		}
 		else
 		{
@@ -690,7 +722,7 @@ int main(int argc, char **argv)
 	if (ch == 10 || ch == 13)
 	{
 		Vec5d mte;
-		ofstream mapping_file("mappingfile");
+		ofstream mapping_file(args.output_file);
 		mapping_file << width << ' ' << height << '\n';
 		for (j = 0; j < height; j++)
 		{

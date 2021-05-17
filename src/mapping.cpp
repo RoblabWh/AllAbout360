@@ -373,7 +373,7 @@ void parse_args(int argc, char **argv, program_args &args)
 
 	DBG(
 		cout << "program arguments:"
-			 << "\n  mode: " << args.prog_mode
+			 << "\n  mode:               " << args.prog_mode
 			 << "\n  input 1:            " << args.in_path_1
 			 << "\n  input 2:            " << args.in_path_2
 			 << "\n  map:                " << args.map_path
@@ -503,8 +503,10 @@ cv::Mat get_sharpest_image(cv::VideoCapture &in_1, cv::VideoCapture &in_2, const
 template <interpolation_type interpol_t, bool single_input, program_mode prog_m>
 void process_video(cv::VideoCapture &in_1, cv::VideoCapture &in_2, const cv::Mat &map, cv::Mat &equiframe, cv::VideoWriter &wrt, const program_args &args, extra_data &extra_data)
 {
-	cv::Mat frame_1, frame_2;
+	cv::Mat frame_1, frame_2, grey, laplace, mean, stddev, best_frame;
+	double best_stddev = 0;
 	int key, out_idx = 1;
+	size_t search_count = args.search_range / 2;
 	char full_out_path[args.out_path.size() + args.out_extension.size() + args.out_dec_len];
 	bool playing = prog_m != program_mode::INTERACTIVE, play_once = true;
 	TIMES(
@@ -620,36 +622,54 @@ void process_video(cv::VideoCapture &in_1, cv::VideoCapture &in_2, const cv::Mat
 		}
 		else
 		{
-			// TODO only short fix
 			if (args.search_range > 0)
-				equiframe = get_sharpest_image<single_input>(in_1, in_2, map, extra_data, args.search_range, args.search_range);
-
-			if constexpr (single_input)
 			{
-				// for (size_t i = 0; i < args.frameskip - args.search_range; i++)
-				for (size_t i = 0; i < args.frameskip; i++)
+				cv::cvtColor(equiframe, grey, cv::COLOR_BGR2GRAY);
+				cv::Laplacian(grey, laplace, CV_64F);
+				cv::meanStdDev(laplace, mean, stddev);
+				DBG(cout << "stddev: " << stddev << endl;)
+				if (stddev.at<double>(0) > best_stddev)
 				{
-					in_1.grab();
+					best_frame = equiframe;
+					best_stddev = stddev.at<double>(0);
 				}
+				search_count++;
 			}
 			else
 			{
-				// for (size_t i = 0; i < args.frameskip - args.search_range; i++)
-				for (size_t i = 0; i < args.frameskip; i++)
+				best_frame = equiframe;
+			}
+
+			if (search_count == args.search_range)
+			{
+				DBG( cout << "best stddev: " << best_stddev << endl; )
+				if constexpr (single_input)
 				{
-					in_1.grab();
-					in_2.grab();
+					for (size_t i = 0; i < args.frameskip - args.search_range; i++)
+					{
+						in_1.grab();
+					}
 				}
-			}
-			if constexpr (prog_m == program_mode::VIDEO)
-			{
-				wrt << equiframe;
-			}
-			if constexpr (prog_m == program_mode::IMAGE)
-			{
-				sprintf(full_out_path, (args.out_path + args.out_extension).c_str(), out_idx);
-				cv::imwrite(full_out_path, equiframe);
-				out_idx++;
+				else
+				{
+					for (size_t i = 0; i < args.frameskip - args.search_range; i++)
+					{
+						in_1.grab();
+						in_2.grab();
+					}
+				}
+				if constexpr (prog_m == program_mode::VIDEO)
+				{
+					wrt << best_frame;
+				}
+				if constexpr (prog_m == program_mode::IMAGE)
+				{
+					sprintf(full_out_path, (args.out_path + args.out_extension).c_str(), out_idx);
+					cv::imwrite(full_out_path, best_frame);
+					out_idx++;
+				}
+				search_count = 0;
+				best_stddev = 0;
 			}
 		}
 	}
@@ -742,9 +762,16 @@ void process_input(program_args &args)
 		if (args.num_frames > 0)
 			args.frameskip = cap_1.get(cv::CAP_PROP_FRAME_COUNT) / args.num_frames - 1;
 		else if (args.frameskip > 0)
-			args.num_frames = cap_1.get(cv::CAP_PROP_FRAME_COUNT) / (args.frameskip + 1);
+			args.num_frames = cap_1.get(cv::CAP_PROP_FRAME_COUNT) / (args.frameskip + 1) + 1;
 		else
 			args.num_frames = cap_1.get(cv::CAP_PROP_FRAME_COUNT);
+
+		// check if search ranges collide
+		if (args.prog_mode != program_mode::INTERACTIVE && args.frameskip < args.search_range)
+		{
+			cout << "search range(" << args.search_range << ") has to be less then frameskip(" << args.frameskip << ")." << endl;
+			exit(EXIT_FAILURE);
+		}
 
 		// calculate max number of decimal digits needed for frame index
 		if ((args.prog_mode == program_mode::INTERACTIVE || args.prog_mode == program_mode::IMAGE)
@@ -853,9 +880,16 @@ void process_input(program_args &args)
 		if (args.num_frames > 0)
 			args.frameskip = cap_1.get(cv::CAP_PROP_FRAME_COUNT) / args.num_frames - 1;
 		else if (args.frameskip > 0)
-			args.num_frames = cap_1.get(cv::CAP_PROP_FRAME_COUNT) / (args.frameskip + 1);
+			args.num_frames = cap_1.get(cv::CAP_PROP_FRAME_COUNT) / (args.frameskip + 1) + 1;
 		else
 			args.num_frames = cap_1.get(cv::CAP_PROP_FRAME_COUNT);
+
+		// check if search ranges collide
+		if (args.prog_mode != program_mode::INTERACTIVE && args.frameskip < args.search_range)
+		{
+			cout << "search range(" << args.search_range << ") has to be less then frameskip(" << args.frameskip << ")." << endl;
+			exit(EXIT_FAILURE);
+		}
 
 		// calculate max number of decimal digits needed for frame index
 		if ((args.prog_mode == program_mode::INTERACTIVE || args.prog_mode == program_mode::IMAGE)

@@ -69,7 +69,7 @@ private:
 	std::atomic_bool running, alive, good;
 	extra_data edata;
 
-	static const size_t DEFAULT_BUFFER_LENGTH = 2;
+	static const size_t DEFAULT_BUFFER_LENGTH = 1;
 
 	template <bool single_input> void init(interpolation_type interpol_t, size_t buffer_length);
 	template <interpolation_type interpol_t, bool single_input> void process();

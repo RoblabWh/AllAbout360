@@ -27,9 +27,11 @@ struct program_args
 {
 	string in_path_1, in_path_2, map_path, out_path, out_extension;
 	interpolation_type interpol_t = interpolation_type::NEAREST_NEIGHBOUR;
-	int out_codec = 0, out_dec_len = 0;
+	int out_codec = 0, out_dec_len = 0, out_width = 0, out_height = 0;
+	double search_x = 0, search_y = 0, search_width = 1, search_height = 1;
 	size_t frameskip = 0, num_frames = 0, search_range = 0;
 	program_mode prog_mode = program_mode::INTERACTIVE;
+	bool preview = false, video_index = false;
 };
 
 /**
@@ -65,7 +67,7 @@ void read_mapping_file(string path, cv::Mat &mapping_table)
 		{
 			if (file >> mte[0] >> mte[1] >> mte[2] >> mte[3] >> mte[4])
 			{
-				if (mte[0] < 0 || mte[0] >= height || mte[1] < 0 || mte[1] >= height || mte[2] < 0 || mte[2] >= height || mte[3] < 0 || mte[3] >= height || mte[4] < 0 || mte[4] > 1)
+				if (mte[0] < 0 || mte[0] > height - 1 || mte[1] < 0 || mte[1] > height - 1 || mte[2] < 0 || mte[2] > height - 1 || mte[3] < 0 || mte[3] > height - 1 || mte[4] < 0 || mte[4] > 1)
 				{
 					cerr << "Error reading mapping file \"" << path << "\" on line " << j * width + i + 2 << ", value out of range." << endl;
 					exit(EXIT_FAILURE);
@@ -141,25 +143,30 @@ void parse_args(int argc, char **argv, program_args &args)
 {
 	const string USAGE_TEXT = string("usage:\n  ")
 							 + argv[0] + string(" -h\n  ")
-							 + argv[0] + string(" MODE [-li] [-sr <range>] [-fs <frameskip> | -nf <number frames>] [-c <codec>] [-o <output file>] -m <map file> <input file 1> [<input file 2>]\n");
+							 + argv[0] + string(" MODE [OPTION ...] -m <map file> <input file 1> [<input file 2>]\n");
 	const string HELP_TEXT = "modes:\n"
 							 "  interactive             int  interactively jump through the video and save images\n"
 							 "  video                   vid  convert the input to a video file\n"
 							 "  image                   img  convert the input to an image sequence\n"
 							 "\n"
 							 "global options:\n"
-							 "  --help                  -h   print this message\n"
-							 "  --mappingfile  --map    -m   mapping file path\n"
-							 "  --output                -o   output file path with printf format for image numbers\n"
-							 "  --linear-interpolation  -li  enable linear interpolation\n"
-							 "  --search-range          -sr  range to search befor and after the current frame for sharper image\n"
+							 "  --help                  -h                    print this message\n"
+							 "  --mappingfile  --map    -m  PATH              mapping file path\n"
+							 "  --output                -o  PATH              output file path with printf format for image numbers\n"
+							 "  --resolution            -r  WIDTH HEIGHT      output resolution\n"
+							 "  --linear-interpolation  -li                   enable linear interpolation\n"
+							 "  --search-range          -ra RANGE             range to search befor and after the current frame for sharper image\n"
+							 "  --search-region         -re X Y WIDTH HEIGHT  region to use in the current frame for image sharpness detection given as double[x y width height] which are factors in relation to max\n"
 							 "video options:\n"
-							 "  --codec  --fourcc       -c   codec for video output\n"
-							 "  --frameskip             -fs  number of frames to skip between each image\n"
-							 "  --number-frames         -nf  number of frames to output with even spacing from start to end\n"
+							 "  --codec  --fourcc       -c  CODEC             codec for video output\n"
+							 "  --frameskip             -fs NUMBER            number of frames to skip between each image\n"
+							 "  --number-frames         -nf NUMBER            number of frames to output with even spacing from start to end\n"
+							 "  --preview               -pv                   show images on screen while mapping\n"
 							 "image options:\n"
-							 "  --frameskip             -fs  number of frames to skip between each image\n"
-							 "  --number-frames         -nf  number of frames to output with even spacing from start to end\n";
+							 "  --frameskip             -fs NUMBER            number of frames to skip between each image\n"
+							 "  --number-frames         -nf NUMBER            number of frames to output with even spacing from start to end\n"
+							 "  --preview               -pv                   show images on screen while mapping\n"
+							 "  --video-index           -vi                   use video index and not output index for indexing output\n";
 
 	// parse mode of operation
 	if (argc < 2)
@@ -308,7 +315,7 @@ void parse_args(int argc, char **argv, program_args &args)
 				exit(EXIT_FAILURE);
 			}
 		}
-		else if (string("-sr") == argv[i] || string("--search-range") == argv[i])
+		else if (string("-ra") == argv[i] || string("--search-range") == argv[i])
 		{
 			i++;
 			if (i < argc)
@@ -318,6 +325,58 @@ void parse_args(int argc, char **argv, program_args &args)
 			else
 			{
 				cerr << "no search range provided." << endl;
+				exit(EXIT_FAILURE);
+			}
+		}
+		else if (string("-re") == argv[i] || string("--search-region") == argv[i])
+		{
+			i += 4;
+			if (i < argc)
+			{
+				args.search_x = stod(argv[i - 3]);
+				args.search_y = stod(argv[i - 2]);
+				args.search_width = stod(argv[i - 1]);
+				args.search_height = stod(argv[i]);
+			}
+			else
+			{
+				cerr << "search region not or not completely provided." << endl;
+				exit(EXIT_FAILURE);
+			}
+		}
+		else if (string("--preview") == argv[i] || string("-pv") == argv[i])
+		{
+			args.preview = true;
+		}
+		else if (string("--video-index") == argv[i] || string("-vi") == argv[i])
+		{
+			if (args.prog_mode != program_mode::IMAGE)
+			{
+				cerr << "Output indexing is only available in image mode." << endl;
+				exit(EXIT_FAILURE);
+			}
+			args.video_index = true;
+		}
+		else if (string("--resolution") == argv[i] || string("-r") == argv[i])
+		{
+			i++;
+			if (i < argc)
+			{
+				args.out_width = stoi(argv[i]);
+			}
+			else
+			{
+				cerr << "no resolution provided." << endl;
+				exit(EXIT_FAILURE);
+			}
+			i++;
+			if (i < argc)
+			{
+				args.out_height = stoi(argv[i]);
+			}
+			else
+			{
+				cerr << "height missing in resolution option." << endl;
 				exit(EXIT_FAILURE);
 			}
 		}
@@ -361,6 +420,10 @@ void parse_args(int argc, char **argv, program_args &args)
 			args.out_extension = ".png";
 	}
 
+	// always show preview in interactive mode
+	if (args.prog_mode == program_mode::INTERACTIVE)
+		args.preview = true;
+
 	// default search range for interactive mode
 	if (args.prog_mode == program_mode::INTERACTIVE && args.search_range == 0)
 		args.search_range = 10;
@@ -384,6 +447,14 @@ void parse_args(int argc, char **argv, program_args &args)
 			 << "\n  search range:       " << args.search_range
 			 << "\n  frameskip:          " << args.frameskip
 			 << "\n  number frames:      " << args.num_frames
+			 << "\n  preview:            " << args.preview
+			 << "\n  video indexing:     " << args.video_index
+			 << "\n  output width:       " << args.out_width
+			 << "\n  output height:      " << args.out_height
+			 << "\n  search x:           " << args.search_x
+			 << "\n  search y:           " << args.search_y
+			 << "\n  search width:       " << args.search_width
+			 << "\n  search height:      " << args.search_height
 			 << endl;
 	)
 }
@@ -457,8 +528,8 @@ void remap(const cv::Mat &in, const cv::Mat &map, cv::Mat &out, extra_data &extr
 	#endif
 }
 
-template <bool single_input>
-cv::Mat get_sharpest_image(cv::VideoCapture &in_1, cv::VideoCapture &in_2, const cv::Mat &map, extra_data &extra_data, unsigned short before = 10, unsigned short after = 10)
+template <interpolation_type interpol_t, bool single_input>
+cv::Mat get_sharpest_image(cv::VideoCapture &in_1, cv::VideoCapture &in_2, const cv::Mat &map, extra_data &extra_data, unsigned short before = 10, unsigned short after = 10, cv::Rect region = cv::Rect(0, 0, 0, 0))
 {
 	cv::Mat frame_1, frame_2, grey, laplace, mean, stddev, eqr_frame, best_frame;
 	double best_stddev = 0;
@@ -474,14 +545,14 @@ cv::Mat get_sharpest_image(cv::VideoCapture &in_1, cv::VideoCapture &in_2, const
 		in_1 >> frame_1;
 		if constexpr (single_input)
 		{
-			remap<interpolation_type::NEAREST_NEIGHBOUR>(frame_1, map, eqr_frame, extra_data);
+			remap<interpol_t>(frame_1, map, eqr_frame, extra_data);
 		}
 		else
 		{
 			in_2 >> frame_2;
-			remap<interpolation_type::NEAREST_NEIGHBOUR>(frame_1, frame_2, map, eqr_frame, extra_data);
+			remap<interpol_t>(frame_1, frame_2, map, eqr_frame, extra_data);
 		}
-		cv::cvtColor(eqr_frame, grey, cv::COLOR_BGR2GRAY);
+		cv::cvtColor((region.width != 0 && region.height != 0) ? eqr_frame(region) : eqr_frame, grey, cv::COLOR_BGR2GRAY);
 		cv::Laplacian(grey, laplace, CV_64F);
 		cv::meanStdDev(laplace, mean, stddev);
 		DBG(cout << i << ", " << stddev << endl;)
@@ -503,17 +574,26 @@ cv::Mat get_sharpest_image(cv::VideoCapture &in_1, cv::VideoCapture &in_2, const
 template <interpolation_type interpol_t, bool single_input, program_mode prog_m>
 void process_video(cv::VideoCapture &in_1, cv::VideoCapture &in_2, const cv::Mat &map, cv::Mat &equiframe, cv::VideoWriter &wrt, const program_args &args, extra_data &extra_data)
 {
-	cv::Mat frame_1, frame_2, grey, laplace, mean, stddev, best_frame;
+	cv::Mat frame_1, frame_2, grey, laplace, mean, stddev, best_frame, outframe;
+	cv::Size outres(args.out_width, args.out_height);
+	cv::Rect search_region(args.search_x * args.out_width, args.search_y * args.out_height,
+						   args.search_width * args.out_width, args.search_height * args.out_height);
 	double best_stddev = 0;
-	int key, out_idx = 1;
+	int key, out_idx = 0;
 	size_t search_count = args.search_range / 2;
 	char full_out_path[args.out_path.size() + args.out_extension.size() + args.out_dec_len];
 	bool playing = prog_m != program_mode::INTERACTIVE, play_once = true;
-	TIMES(
-		unsigned int nrframes = 0; double mapping_sum = 0, loading_sum = 0, preview_sum = 0;
-		std::chrono::steady_clock::time_point mapping_start, mapping_end, loading_start, loading_end, preview_start, preview_end;)
+	TIMES
+	(
+		size_t mapping_count = 0, loading_count = 0, preview_count = 0, resize_count = 0, write_count = 0, skip_count = 0, laplace_count = 0, loop_count = 0;
+		double mapping_sum = 0, loading_sum = 0, preview_sum = 0, resize_sum = 0, write_sum = 0, skip_sum = 0, laplace_sum = 0, loop_sum = 0;
+		std::chrono::steady_clock::time_point mapping_start, mapping_end, loading_start, loading_end, preview_start, preview_end,
+											  resize_start, resize_end, write_start, write_end, skip_start, skip_end, laplace_start, laplace_end,
+											  loop_start, loop_end;
+	)
 	while ((key = cv::waitKey(1)) != 27)
 	{
+		TIMES(loop_start = std::chrono::steady_clock::now();)
 		if (playing || play_once)
 		{
 			TIMES(loading_start = std::chrono::steady_clock::now();)
@@ -531,7 +611,7 @@ void process_video(cv::VideoCapture &in_1, cv::VideoCapture &in_2, const cv::Mat
 				if (frame_1.empty() || frame_2.empty())
 					break;
 			}
-			TIMES(loading_end = std::chrono::steady_clock::now();
+			TIMES(loading_end = std::chrono::steady_clock::now(); loading_count++;
 				  loading_sum += std::chrono::duration_cast<std::chrono::duration<double>>(loading_end - loading_start).count();)
 
 			TIMES(mapping_start = std::chrono::steady_clock::now();)
@@ -539,27 +619,24 @@ void process_video(cv::VideoCapture &in_1, cv::VideoCapture &in_2, const cv::Mat
 				remap<interpol_t>(frame_1, map, equiframe, extra_data);
 			else
 				remap<interpol_t>(frame_1, frame_2, map, equiframe, extra_data);
-			TIMES(mapping_end = std::chrono::steady_clock::now();
+			TIMES(mapping_end = std::chrono::steady_clock::now(); mapping_count++;
 				  mapping_sum += std::chrono::duration_cast<std::chrono::duration<double>>(mapping_end - mapping_start).count();)
+
+			TIMES(resize_start = std::chrono::steady_clock::now();)
+			if (args.out_width == map.cols && args.out_height == map.rows)
+				outframe = equiframe;
+			else
+				cv::resize(equiframe, outframe, outres, 0, 0, cv::INTER_AREA);
+			TIMES(resize_end = std::chrono::steady_clock::now(); resize_count++;
+				  resize_sum += std::chrono::duration_cast<std::chrono::duration<double>>(resize_end - resize_start).count();)
 
 			TIMES(preview_start = std::chrono::steady_clock::now();)
 			// Auf den Schirm Spoki
-			imshow(WINDOW_NAME, equiframe);
-			TIMES(preview_end = std::chrono::steady_clock::now();
+			if (args.preview)
+				imshow(WINDOW_NAME, outframe);
+			TIMES(preview_end = std::chrono::steady_clock::now(); preview_count++;
 				  preview_sum += std::chrono::duration_cast<std::chrono::duration<double>>(preview_end - preview_start).count();)
 
-			// check time
-			TIMES(nrframes++;
-				  if ((nrframes % 150) == 0) {
-					  printf("frame nr: %u\n", nrframes);
-					  printf("%fms avg mapping time\n", mapping_sum / nrframes * 1000);
-					  printf("%fms avg loading time\n", loading_sum / nrframes * 1000);
-					  printf("%fms avg preview time\n", preview_sum / nrframes * 1000);
-					  printf("%f fps mapping\n", nrframes / mapping_sum);
-					  printf("%f fps mapping + loading\n", nrframes / (mapping_sum + loading_sum));
-					  printf("%f fps mapping + loading + preview\n", nrframes / (mapping_sum + loading_sum + preview_sum));
-					  printf("\n");
-				  })
 			play_once = false;
 		}
 		if constexpr (prog_m == program_mode::INTERACTIVE)
@@ -575,12 +652,12 @@ void process_video(cv::VideoCapture &in_1, cv::VideoCapture &in_2, const cv::Mat
 			case 'f':
 				playing = false;
 				if (args.search_range > 0)
-					equiframe = get_sharpest_image<single_input>(in_1, in_2, map, extra_data, args.search_range, args.search_range);
-				imshow(WINDOW_NAME, equiframe);
+					outframe = get_sharpest_image<interpol_t, single_input>(in_1, in_2, map, extra_data, args.search_range / 2, args.search_range / 2, search_region);
+				imshow(WINDOW_NAME, outframe);
 				break;
 			case 's':
 				sprintf(full_out_path, (args.out_path + args.out_extension).c_str(), out_idx);
-				cv::imwrite(full_out_path, equiframe);
+				cv::imwrite(full_out_path, outframe);
 				out_idx++;
 				break;
 			case '.':
@@ -622,27 +699,48 @@ void process_video(cv::VideoCapture &in_1, cv::VideoCapture &in_2, const cv::Mat
 		}
 		else
 		{
+			TIMES(laplace_start = std::chrono::steady_clock::now();)
 			if (args.search_range > 0)
 			{
-				cv::cvtColor(equiframe, grey, cv::COLOR_BGR2GRAY);
+				cv::cvtColor(outframe(search_region), grey, cv::COLOR_BGR2GRAY);
 				cv::Laplacian(grey, laplace, CV_64F);
 				cv::meanStdDev(laplace, mean, stddev);
 				DBG(cout << "stddev: " << stddev << endl;)
 				if (stddev.at<double>(0) > best_stddev)
 				{
-					best_frame = equiframe;
+					best_frame = outframe;
 					best_stddev = stddev.at<double>(0);
 				}
 				search_count++;
 			}
 			else
 			{
-				best_frame = equiframe;
+				best_frame = outframe;
 			}
+			TIMES(laplace_end = std::chrono::steady_clock::now(); laplace_count++;
+				  laplace_sum += std::chrono::duration_cast<std::chrono::duration<double>>(laplace_end - laplace_start).count();)
 
 			if (search_count == args.search_range)
 			{
 				DBG( cout << "best stddev: " << best_stddev << endl; )
+				TIMES(write_start = std::chrono::steady_clock::now();)
+				if constexpr (prog_m == program_mode::VIDEO)
+				{
+					wrt.write(best_frame);
+				}
+				if constexpr (prog_m == program_mode::IMAGE)
+				{
+					sprintf(full_out_path, (args.out_path + args.out_extension).c_str(), out_idx);
+					cv::imwrite(full_out_path, best_frame);
+					if (args.video_index)
+						out_idx += args.frameskip;
+					out_idx++;
+				}
+				TIMES(write_end = std::chrono::steady_clock::now(); write_count++;
+					write_sum += std::chrono::duration_cast<std::chrono::duration<double>>(write_end - write_start).count();)
+				search_count = 0;
+				best_stddev = 0;
+				TIMES(skip_start = std::chrono::steady_clock::now();)
 				if constexpr (single_input)
 				{
 					for (size_t i = 0; i < args.frameskip - args.search_range; i++)
@@ -658,20 +756,34 @@ void process_video(cv::VideoCapture &in_1, cv::VideoCapture &in_2, const cv::Mat
 						in_2.grab();
 					}
 				}
-				if constexpr (prog_m == program_mode::VIDEO)
-				{
-					wrt << best_frame;
-				}
-				if constexpr (prog_m == program_mode::IMAGE)
-				{
-					sprintf(full_out_path, (args.out_path + args.out_extension).c_str(), out_idx);
-					cv::imwrite(full_out_path, best_frame);
-					out_idx++;
-				}
-				search_count = 0;
-				best_stddev = 0;
+				TIMES(skip_end = std::chrono::steady_clock::now(); skip_count++;
+					skip_sum += std::chrono::duration_cast<std::chrono::duration<double>>(skip_end - skip_start).count();)
 			}
 		}
+		TIMES(loop_end = std::chrono::steady_clock::now(); loop_count++;
+				loop_sum += std::chrono::duration_cast<std::chrono::duration<double>>(loop_end - loop_start).count();)
+		
+		// print times
+		TIMES
+		(
+			if ((loop_count % 100) == 0 && loop_count != 0) {
+				printf("loop nr: %lu\n", loop_count);
+				printf("%8.4fms avg loading time\n", loading_sum / loading_count * 1000);
+				printf("%8.4fms avg mapping time\n", mapping_sum / mapping_count * 1000);
+				printf("%8.4fms avg resize time\n", resize_sum / resize_count * 1000);
+				printf("%8.4fms avg preview time\n", preview_sum / preview_count * 1000);
+				if constexpr (prog_m != program_mode::INTERACTIVE)
+				{
+					printf("%8.4fms avg laplace time\n", laplace_sum / laplace_count * 1000);
+					printf("%8.4fms avg write time\n", write_sum / write_count * 1000);
+					printf("%8.4fms avg skip time\n", skip_sum / skip_count * 1000);
+				}
+				printf("%8.4fms avg loop time\n", loop_sum / 100. * 1000);
+				printf("%8.4fhz avg full loop\n", 100. / loop_sum);
+				printf("\n");
+				loop_sum = 0;
+			}
+		)
 	}
 }
 
@@ -694,8 +806,11 @@ void process_input(program_args &args)
 	#endif
 
 	// create windows
-	cv::namedWindow(WINDOW_NAME, cv::WINDOW_KEEPRATIO | cv::WINDOW_NORMAL);
-	cv::resizeWindow(WINDOW_NAME, 1440, 720);
+	if (args.preview)
+	{
+		cv::namedWindow(WINDOW_NAME, cv::WINDOW_KEEPRATIO | cv::WINDOW_NORMAL);
+		cv::resizeWindow(WINDOW_NAME, 1440, 720);
+	}
 
 	if (args.in_path_2.empty()) // one input
 	{
@@ -758,6 +873,13 @@ void process_input(program_args &args)
 			return;
 		}
 
+		// set output resolution if none is set
+		if (args.out_width == 0 || args.out_height == 0)
+		{
+			args.out_width = mapping_table.cols;
+			args.out_height = mapping_table.rows;
+		}
+
 		// calculate (max) number of output frames
 		if (args.num_frames > 0)
 			args.frameskip = cap_1.get(cv::CAP_PROP_FRAME_COUNT) / args.num_frames - 1;
@@ -777,8 +899,12 @@ void process_input(program_args &args)
 		if ((args.prog_mode == program_mode::INTERACTIVE || args.prog_mode == program_mode::IMAGE)
 			&& args.out_dec_len == 0)
 		{
-			string s_num_frames = to_string(args.num_frames);
-			args.out_dec_len = s_num_frames.size();
+			string s_num_idx;
+			if (args.video_index)
+				s_num_idx = to_string((size_t) cap_1.get(cv::CAP_PROP_FRAME_COUNT));
+			else
+				s_num_idx = to_string(args.num_frames);
+			args.out_dec_len = s_num_idx.size();
 			args.out_path += "%0" + to_string(args.out_dec_len) + 'd';
 		}
 		
@@ -792,7 +918,13 @@ void process_input(program_args &args)
 				process_video<interpol_t, true, program_mode::INTERACTIVE>(cap_1, cap_2, mapping_table, equiframe, wrt, args, extra_data);
 				break;
 			case program_mode::VIDEO:
-				wrt.open(args.out_path+args.out_extension, args.out_codec == 0 ? cap_1.get(cv::CAP_PROP_FOURCC) : args.out_codec, cap_1.get(cv::CAP_PROP_FPS), cv::Size(mapping_table.cols, mapping_table.rows));
+				wrt.open(args.out_path+args.out_extension, args.out_codec == 0 ? cap_1.get(cv::CAP_PROP_FOURCC) : args.out_codec, cap_1.get(cv::CAP_PROP_FPS),
+						cv::Size(args.out_width, args.out_height));
+				if (!wrt.isOpened())
+				{
+					cerr << "Couldn't open \"" << args.out_path+args.out_extension << "\" for writing." << endl;
+					exit(EXIT_FAILURE);
+				}
 				process_video<interpol_t, true, program_mode::VIDEO>(cap_1, cap_2, mapping_table, equiframe, wrt, args, extra_data);
 				break;
 			case program_mode::IMAGE:
@@ -876,6 +1008,13 @@ void process_input(program_args &args)
 			exit(EXIT_FAILURE);
 		}
 
+		// set output resolution if none is set
+		if (args.out_width == 0 || args.out_height == 0)
+		{
+			args.out_width = mapping_table.cols;
+			args.out_height = mapping_table.rows;
+		}
+
 		// calculate (max) number of output frames
 		if (args.num_frames > 0)
 			args.frameskip = cap_1.get(cv::CAP_PROP_FRAME_COUNT) / args.num_frames - 1;
@@ -895,8 +1034,12 @@ void process_input(program_args &args)
 		if ((args.prog_mode == program_mode::INTERACTIVE || args.prog_mode == program_mode::IMAGE)
 			&& args.out_dec_len == 0)
 		{
-			string s_num_frames = to_string(args.num_frames);
-			args.out_dec_len = s_num_frames.size();
+			string s_num_idx;
+			if (args.video_index)
+				s_num_idx = to_string((size_t) cap_1.get(cv::CAP_PROP_FRAME_COUNT));
+			else
+				s_num_idx = to_string(args.num_frames);
+			args.out_dec_len = s_num_idx.size();
 			args.out_path += "%0" + to_string(args.out_dec_len) + 'd';
 		}
 		
@@ -911,7 +1054,13 @@ void process_input(program_args &args)
 				process_video<interpol_t, false, program_mode::INTERACTIVE>(cap_1, cap_2, mapping_table, equiframe, wrt, args, extra_data);
 				break;
 			case program_mode::VIDEO:
-				wrt.open(args.out_path+args.out_extension, args.out_codec == 0 ? cap_1.get(cv::CAP_PROP_FOURCC) : args.out_codec, cap_1.get(cv::CAP_PROP_FPS), cv::Size(mapping_table.cols, mapping_table.rows));
+				wrt.open(args.out_path+args.out_extension, args.out_codec == 0 ? cap_1.get(cv::CAP_PROP_FOURCC) : args.out_codec, cap_1.get(cv::CAP_PROP_FPS),
+						cv::Size(args.out_width, args.out_height));
+				if (!wrt.isOpened())
+				{
+					cerr << "Couldn't open \"" << args.out_path+args.out_extension << "\" for writing." << endl;
+					exit(EXIT_FAILURE);
+				}
 				process_video<interpol_t, false, program_mode::VIDEO>(cap_1, cap_2, mapping_table, equiframe, wrt, args, extra_data);
 				break;
 			case program_mode::IMAGE:
@@ -942,9 +1091,9 @@ int main(int argc, char **argv)
 	{
 		cout << "controls:\n  space, k\tplay/pause\n  .\t\tnext frame\n  ,\t\tlast frame\n"
 				"  ->\t\tjump 5s ahead\n  <-\t\tjump 5s back\n  l\t\tjump 10s ahead\n  j\t\tjump 10s back\n"
-				"  f\t\tget sharpest image in range of +-10 frames\n  esc\t\texit" << endl;
+				"  f\t\tget sharpest image from surrounding frames\n  esc\t\texit" << endl;
 	}
-	else
+	else if (args.preview)
 	{
 		cout << "controls:\n  esc\t\texit" << endl;
 	}
@@ -968,15 +1117,15 @@ int main(int argc, char **argv)
 template <bool single_input>
 void mapper::init(interpolation_type interpol_t, size_t buffer_length)
 {
-	this->buffer_length = buffer_length;
-	this->read_pos = buffer_length;
+	this->buffer_length = buffer_length + 1;
+	this->read_pos = this->buffer_length;
 	this->write_pos = 0;
 
-	this->unread = new atomic_bool[buffer_length + 1];
-	this->unwritten = new atomic_bool[buffer_length];
-	this->out = new cv::Mat[buffer_length];
+	this->unread = new atomic_bool[this->buffer_length + 1];
+	this->unwritten = new atomic_bool[this->buffer_length];
+	this->out = new cv::Mat[this->buffer_length];
 
-	for (size_t i = 0; i < buffer_length; i++)
+	for (size_t i = 0; i < this->buffer_length; i++)
 	{
 		this->out[i].create(this->map.rows, this->map.cols, CV_8UC3);
 		this->unwritten[i] = true;

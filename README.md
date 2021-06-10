@@ -27,7 +27,7 @@ The Calibration part is used to create a mappingfile that fits your need. You ca
 
 
 ## Starting Calibration
-start by running the example provided within the Project
+start by running the example provided within the Project or with your own videofile
 ```
 ./dfe2eqr-calibration ../example.mp4
 ```
@@ -71,3 +71,8 @@ At this step you might need to try some configurations with different radius and
 The last Parameter would be the blend. You can also use the blend to see how your eyes overlap and use that to make a better calibration.
 
 ![blendimage](https://user-images.githubusercontent.com/74601419/119028611-f5d53600-b9a7-11eb-917e-96a454249a67.png)
+
+To genarate the Mappingfile press enter. It will be generated as mapping-table.txt in the build folder.
+
+# Mapping
+The Mappingsoftware uses a mappingfile and one or two input videofiles to create a equirectangularprojection.

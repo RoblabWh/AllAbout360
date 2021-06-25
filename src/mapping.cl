@@ -17,6 +17,16 @@ __kernel void remap_nn(__global unsigned char *g_idata_1, __global unsigned char
 	}
 }
 
+// __kernel void remap_nn(__global unsigned char3 *g_idata_1, __global unsigned char3 *g_idata_2, __global unsigned char3 *g_odata, __global double4 *g_map, unsigned int len)
+// {
+// 	unsigned int i = get_global_id(0);
+
+// 	if (i < len)
+// 	{
+// 		g_odata[i] = g_idata_1[g_map[i][0]] * g_map[i][2] + g_idata_2[g_map[i][1]] * g_map[i][3];
+// 	}
+// }
+
 __kernel void remap_li(__global unsigned char *g_idata_1, __global unsigned char *g_idata_2, __global unsigned char *g_odata, __global double *g_map, unsigned int len)
 {
 	unsigned int i = get_global_id(0);

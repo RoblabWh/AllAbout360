@@ -1,10 +1,14 @@
 #include <CL/cl.h>
 #ifdef DEBUG
-static cl_int _cl_error = 0;
-#define CL_ERROR_CHECK(FNC_CALL) _cl_error = FNC_CALL; if(_cl_error != 0) { printf("%s: %s\n",  #FNC_CALL, clGetErrorString(_cl_error)); exit(EXIT_FAILURE); }
+#define CL_RETERR_CHECK(FNC_CALL) _cl_error = FNC_CALL; if(_cl_error != 0) { printf("(%s:%d) %s: %s\n", __FILE__, __LINE__,  #FNC_CALL, clGetErrorString(_cl_error)); exit(EXIT_FAILURE); }
+#define CL_ARGERR_CHECK(FNC_CALL) FNC_CALL; if(_cl_error != 0) { printf("(%s:%d)%s: %s\n", __FILE__, __LINE__,  #FNC_CALL, clGetErrorString(_cl_error)); exit(EXIT_FAILURE); }
 #else
-#define CL_ERROR_CHECK(FNC_CALL) FNC_CALL
+#define CL_RETERR_CHECK(FNC_CALL) FNC_CALL
+#define CL_ARGERR_CHECK(FNC_CALL) FNC_CALL
+#define CL_CHECK_ERROR()
 #endif
+
+static cl_int _cl_error = 0;
 
 static const char *clGetErrorString(cl_int error)
 {

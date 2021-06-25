@@ -7,9 +7,9 @@
 #endif
 #include "mapping.h"
 #ifdef WITH_OPENCL
-#include <CL/cl2.hpp>
-#include "mapping.cl.h"
+#include <CL/cl.hpp>
 #include "clerror.h"
+#include "mapping.cl.h"
 #endif
 
 using namespace std;
@@ -25,13 +25,14 @@ enum program_mode
 
 struct program_args
 {
-	string in_path_1, in_path_2, map_path, out_path, out_extension;
+	string in_path_1, in_path_2, map_path, out_path, out_extension, param_path;
 	interpolation_type interpol_t = interpolation_type::NEAREST_NEIGHBOUR;
 	int out_codec = 0, out_dec_len = 0, out_width = 0, out_height = 0;
 	double search_x = 0, search_y = 0, search_width = 1, search_height = 1;
 	size_t frameskip = 0, num_frames = 0, search_range = 0;
 	program_mode prog_mode = program_mode::INTERACTIVE;
 	bool preview = false, video_index = false;
+	calib_params parameter = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 };
 
 /**
@@ -130,6 +131,341 @@ void read_mapping_file(string path, cv::Mat &mapping_table)
 		cerr << "Error reading mapping file \"" << path << "\" on line " << height * width + 1 << ", too many entries." << endl;
 		exit(EXIT_FAILURE);
 	}
+	file.close();
+}
+
+void read_mapping_params(string path, calib_params &params)
+{
+	ifstream file(path);
+	if (!file.is_open())
+	{
+		cerr << "Couldn't open \"" << path << "\" for reading." << endl;
+		exit(EXIT_FAILURE);
+	}
+	file >> params.x_off_front >> params.y_off_front >> params.radius_front >> params.rot_front
+		 >> params.x_off_rear >> params.y_off_rear >> params.radius_rear >> params.rot_rear
+		 >> params.front_limit >> params.blend_limit >> params.blend_size >> params.orientation;
+	if (file.fail())
+	{
+		cerr << "Wasn't able to read all parameters from file \"" << path << "\"." << endl;
+		exit(EXIT_FAILURE);
+	}
+	char endc;
+	file >> endc;
+	if (!file.eof())
+	{
+		cerr << "Parameterfile \"" << path << "\" has too many entries." << endl;
+		exit(EXIT_FAILURE);
+	}
+	file.close();
+	DBG(
+	cout << "Read parameters:"
+		 << "\n  front:"
+		 << "\n    x offset:  " << params.x_off_front
+		 << "\n    y offset:  " << params.y_off_front
+		 << "\n    radius:    " << params.radius_front
+		 << "\n    rotation:  " << params.rot_front
+		 << "\n  rear:"
+		 << "\n    x offset:  " << params.x_off_rear
+		 << "\n    y offset:  " << params.y_off_rear
+		 << "\n    radius:    " << params.radius_rear
+		 << "\n    rotation:  " << params.rot_rear
+		 << "\n  front limit: " << params.front_limit
+		 << "\n  blend limit: " << params.blend_limit
+		 << "\n  blend size:  " << params.blend_size
+		 << "\n";
+	)
+}
+
+/**
+ * @brief Checks if x, y are in range of height and limits them if not.
+ * @param x 
+ * @param y 
+ * @param height 
+ */
+void clip_borders(double &x, double &y, unsigned int height)
+{
+	if (x < 0)
+		x = 0;
+	else if (x > height - 1)
+		x = height - 1;
+	if (y < 0)
+		y = 0;
+	else if (y > height - 1)
+		y = height - 1;
+}
+
+/**
+ * @brief Calculates the x and y indices and the bland factor for the dualfisheye images.
+ * 
+ * @param p_x 3D normalised cartesian vector x part
+ * @param p_y 3D normalised cartesian vector y part
+ * @param p_z 3D normalised cartesian vector z part
+ * @param height number of rows in input image
+ * @param params calibration parameters
+ * @return Vec5d Indices for both fisheye images and the blend factor
+ */
+template<interpolation_type interpol_t, bool single_input, bool expand>
+cv::Vec<double, 14> cart3D_idxDFE(double p_x, double p_y, double p_z, int height, const calib_params *const params)
+{
+	// polar normalised fisheye coordinates
+	// a = angle from +x or -x axis
+	// r = radius on fish eye to pixel
+	// t = angle from +y or -y on fish eye to pixel
+	double a, r, t;
+	double bf;   // blend factor
+	double x, y; // fisheye index
+	cv::Vec<double, 14> mte; // mapping table entry
+
+	a = atan2(sqrt(p_y * p_y + p_z * p_z), p_x);
+
+	if (a < params->front_limit) // front
+	{
+		r = a / M_PI_2 * params->radius_front;
+		t = atan2(p_z, p_y) + params->rot_front;
+
+		x = ((r * cos(t)) + 1) / 2 * height + params->x_off_front;
+		y = ((r * sin(t)) + 1) / 2 * height + params->y_off_front;
+		clip_borders(x, y, height);
+
+		mte = cv::Vec<double, 14>(x, y, 0, 0, 1);
+	}
+	else if (a < params->blend_limit) // blend
+	{
+		// front
+		r = a / M_PI_2 * params->radius_front;
+		t = atan2(p_z, p_y) + params->rot_front;
+
+		x = (r * cos(t) + 1) / 2 * height + params->x_off_front;
+		y = (r * sin(t) + 1) / 2 * height + params->y_off_front;
+		clip_borders(x, y, height);
+
+		bf = 1 - ((a - params->front_limit) / params->blend_size);
+
+		mte = cv::Vec<double, 14>(x, y, 0, 0, bf);
+
+		// rear
+		r = (M_PI - a) / M_PI_2 * params->radius_rear;
+		t = atan2(p_z, -p_y) + params->rot_rear;
+
+		x = (r * cos(t) + 1) / 2 * height + params->x_off_rear;
+		y = (r * sin(t) + 1) / 2 * height + params->y_off_rear;
+		clip_borders(x, y, height);
+
+		mte[2] = x;
+		mte[3] = y;
+	}
+	else // rear
+	{
+		r = (M_PI - a) / M_PI_2 * params->radius_rear;
+		t = atan2(p_z, -p_y) + params->rot_rear;
+
+		x = (r * cos(t) + 1) / 2 * height + params->x_off_rear;
+		y = (r * sin(t) + 1) / 2 * height + params->y_off_rear;
+		clip_borders(x, y, height);
+
+		mte = cv::Vec<double, 14>(0, 0, x, y, 0);
+	}
+
+	// expand mapping table to reduce calculation later on
+	if constexpr (expand)
+	{
+		mte[5] = 1 - mte[4];
+		if constexpr (interpol_t == interpolation_type::BILINEAR)
+		{
+			int ix = mte[0], iy = mte[1];
+			double xf = mte[0] - ix, yf = mte[1] - iy;
+			double xfi = 1 - xf, yfi = 1 - yf;
+			mte[6] = xfi * yfi;
+			mte[7] = xf * yfi;
+			mte[8] = xfi * yf;
+			mte[9] = xf * yf;
+			ix = mte[2];
+			iy = mte[3];
+			xf = mte[2] - ix;
+			yf = mte[3] - iy;
+			xfi = 1 - xf;
+			yfi = 1 - yf;
+			mte[10] = xfi * yfi;
+			mte[11] = xf * yfi;
+			mte[12] = xfi * yf;
+			mte[13] = xf * yf;
+		}
+		else if constexpr (interpol_t == interpolation_type::NEAREST_NEIGHBOUR)
+		{
+			mte[0] = round(mte[0]);
+			mte[1] = round(mte[1]);
+			mte[2] = round(mte[2]);
+			mte[3] = round(mte[3]);
+		}
+		#ifdef ON_GPU
+		int width = height * 2;
+		if constexpr (single_input)
+		{
+			mte[0] = (width * ((int) mte[1]) + ((int) mte[0])) * 3;
+			mte[1] = mte[0] + width * 3;
+			mte[2] = (width * ((int) mte[3]) + ((int) mte[2]) + height) * 3;
+			mte[3] = mte[2] + width * 3;
+		}
+		else
+		{
+			mte[0] = (height * ((int) mte[1]) + ((int) mte[0])) * 3;
+			mte[1] = mte[0] + height * 3;
+			mte[2] = (height * ((int) mte[3]) + ((int) mte[2])) * 3;
+			mte[3] = mte[2] + height * 3;
+		}
+		#endif
+	}
+	return mte;
+}
+
+template<interpolation_type interpol_t, bool single_input, bool expand>
+void gen_equi_mapping_table(int width, int height, int in_height, const calib_params *const params, cv::Mat &mapping_table)
+{
+	int i, j;			  // equirectangular index
+	double phi, theta;	  // equirectangular polar and azimuthal angle
+	double p_x, p_y, p_z; // 3D normalised cartesian fisheye vector
+
+	DBG(cout << "mappingtable size: " << width << 'x' << height << endl;)
+	mapping_table.create(height, width, CV_64FC(14)); //TODO size based on interpolation
+
+	#pragma omp parallel for private(i, j, phi, theta, p_x, p_y, p_z)
+	for (j = 0; j < height; j++)
+	{
+		theta = (1.0 - ((double)j / (double)height)) * M_PI;
+		for (i = 0; i < width; i++)
+		{
+			phi = (double)i / (double)width * 2.0 * M_PI - params->orientation;
+
+			p_x = cos(phi) * sin(theta);
+			p_y = sin(phi) * sin(theta);
+			p_z = cos(theta);
+
+			mapping_table.at<cv::Vec<double, 14>>(j, i) = cart3D_idxDFE<interpol_t, single_input, expand>(p_x, p_y, p_z, in_height, params);
+		}
+	}
+}
+
+void gen_equi_mapping_table(int width, int height, int in_height, interpolation_type interpol_t, bool single_input, bool expand, const calib_params *const params, cv::Mat &mapping_table)
+{
+	if (single_input)
+	{
+		if (expand)
+		{
+			switch (interpol_t)
+			{
+			case NEAREST_NEIGHBOUR:
+				gen_equi_mapping_table<NEAREST_NEIGHBOUR, true, true>(width, height, in_height, params, mapping_table);
+				break;
+			case BILINEAR:
+				gen_equi_mapping_table<BILINEAR, true, true>(width, height, in_height, params, mapping_table);
+				break;
+			}
+		}
+		else
+		{
+			switch (interpol_t)
+			{
+			case NEAREST_NEIGHBOUR:
+				gen_equi_mapping_table<NEAREST_NEIGHBOUR, true, false>(width, height, in_height, params, mapping_table);
+				break;
+			case BILINEAR:
+				gen_equi_mapping_table<BILINEAR, true, false>(width, height, in_height, params, mapping_table);
+				break;
+			}
+		}
+	}
+	else
+	{
+		if (expand)
+		{
+			switch (interpol_t)
+			{
+			case NEAREST_NEIGHBOUR:
+				gen_equi_mapping_table<NEAREST_NEIGHBOUR, false, true>(width, height, in_height, params, mapping_table);
+				break;
+			case BILINEAR:
+				gen_equi_mapping_table<BILINEAR, false, true>(width, height, in_height, params, mapping_table);
+				break;
+			}
+		}
+		else
+		{
+			switch (interpol_t)
+			{
+			case NEAREST_NEIGHBOUR:
+				gen_equi_mapping_table<NEAREST_NEIGHBOUR, false, false>(width, height, in_height, params, mapping_table);
+				break;
+			case BILINEAR:
+				gen_equi_mapping_table<BILINEAR, false, false>(width, height, in_height, params, mapping_table);
+				break;
+			}
+		}
+	}
+}
+
+template<interpolation_type interpol_t, bool single_input, bool expand>
+void gen_cube_mapping_table(int width, int height, int in_height, const calib_params *const params, cv::Mat &mapping_table)
+{
+	int i, j;			  // equirectangular index
+	double p_x, p_y, p_z; // 3D normalised cartesian fisheye vector
+	int sqr = width / 3,  // square width/height
+		sqr_x2 = sqr * 2,
+		sqr_2 = sqr / 2;
+
+	DBG(cout << "mappingtable size: " << width << 'x' << height << endl;)
+	mapping_table.create(height, width, CV_64FC(14)); //TODO size based on interpolation
+
+	#pragma omp parallel for private(i, j, p_x, p_y, p_z) collapse(2)
+	for (j = 0; j < height; j++)
+	{
+		for (i = 0; i < width; i++)
+		{
+			if (j < sqr)
+			{
+				if (i < sqr)
+				{
+					p_x = i - sqr_2;
+					p_y = sqr_2;
+					p_z = j - sqr_2;
+				}
+				else if (i < sqr_x2)
+				{
+					p_x = sqr_2;
+					p_y = -((i - sqr) - sqr_2);
+					p_z = j - sqr_2;
+				}
+				else
+				{
+					p_x = -((i - sqr_x2) - sqr_2);
+					p_y = -sqr_2;
+					p_z = j - sqr_2;
+				}
+			}
+			else
+			{
+				if (i < sqr)
+				{
+					p_x = -sqr_2;
+					p_y = i - sqr_2;
+					p_z = (j - sqr) - sqr_2;
+				}
+				else if (i < sqr_x2)
+				{
+					p_x = -((j - sqr) - sqr_2);
+					p_y = -((i - sqr) - sqr_2);
+					p_z = sqr_2;
+				}
+				else
+				{
+					p_x = (j - sqr) - sqr_2;
+					p_y = -((i - sqr_x2) - sqr_2);
+					p_z = -sqr_2;
+				}
+			}
+			mapping_table.at<cv::Vec<double, 14>>(j, i) = cart3D_idxDFE<interpol_t, single_input, expand>(p_x, p_y, p_z, in_height, params);
+		}
+	}
 }
 
 /**
@@ -152,6 +488,8 @@ void parse_args(int argc, char **argv, program_args &args)
 							 "global options:\n"
 							 "  --help                  -h                    print this message\n"
 							 "  --mappingfile  --map    -m  PATH              mapping file path\n"
+							 "  --parameters  --params  -p  PARAMETERS        calibration parameters\n"
+							 "  --parameter-file        -pf PATH              calibration parameter file\n"
 							 "  --output                -o  PATH              output file path with printf format for image numbers\n"
 							 "  --resolution            -r  WIDTH HEIGHT      output resolution\n"
 							 "  --linear-interpolation  -li                   enable linear interpolation\n"
@@ -258,6 +596,11 @@ void parse_args(int argc, char **argv, program_args &args)
 		}
 		else if (string("--map") == argv[i] || string("--mappingfile") == argv[i] || string("-m") == argv[i])
 		{
+			if (!args.param_path.empty() || args.parameter.radius_front != 0)
+			{
+				cerr << "Parameters and mapping table can't be used together." << endl;
+				exit(EXIT_FAILURE);
+			}
 			i++;
 			if (i < argc)
 			{
@@ -266,6 +609,63 @@ void parse_args(int argc, char **argv, program_args &args)
 			else
 			{
 				cerr << "no map provided." << endl;
+				exit(EXIT_FAILURE);
+			}
+		}
+		else if (string("--params") == argv[i] || string("--parameters") == argv[i] || string("-p") == argv[i])
+		{
+			if (!args.map_path.empty())
+			{
+				cerr << "Parameters and mapping table can't be used together." << endl;
+				exit(EXIT_FAILURE);
+			}
+			if (!args.param_path.empty())
+			{
+				cerr << "Parameters can be either given by command line oder by file but not both." << endl;
+				exit(EXIT_FAILURE);
+			}
+			i += 12;
+			if (i < argc)
+			{
+				args.parameter.x_off_front = stod(argv[i - 11]);
+				args.parameter.y_off_front = stod(argv[i - 10]);
+				args.parameter.radius_front = stod(argv[i - 9]);
+				args.parameter.rot_front = stod(argv[i - 8]);
+				args.parameter.x_off_rear = stod(argv[i - 7]);
+				args.parameter.y_off_rear = stod(argv[i - 6]);
+				args.parameter.radius_rear = stod(argv[i - 5]);
+				args.parameter.rot_rear = stod(argv[i - 4]);
+				args.parameter.front_limit = stod(argv[i - 3]);
+				args.parameter.blend_limit = stod(argv[i - 2]);
+				args.parameter.blend_size = stod(argv[i - 1]);
+				args.parameter.orientation = stod(argv[i]);
+			}
+			else
+			{
+				cerr << "not enough parameters provided." << endl;
+				exit(EXIT_FAILURE);
+			}
+		}
+		else if (string("--parameter-file") == argv[i] || string("-pf") == argv[i])
+		{
+			if (!args.map_path.empty())
+			{
+				cerr << "Parameters and mapping table can't be used together." << endl;
+				exit(EXIT_FAILURE);
+			}
+			if (args.parameter.radius_front != 0)
+			{
+				cerr << "Parameters can be either given by command line oder by file but not both." << endl;
+				exit(EXIT_FAILURE);
+			}
+			i++;
+			if (i < argc)
+			{
+				args.param_path = argv[i];
+			}
+			else
+			{
+				cerr << "no parameter file provided." << endl;
 				exit(EXIT_FAILURE);
 			}
 		}
@@ -404,9 +804,16 @@ void parse_args(int argc, char **argv, program_args &args)
 	}
 
 	// check if map is provided
-	if (args.map_path.empty())
+	if (args.map_path.empty() && args.param_path.empty() && args.parameter.radius_front == 0)
 	{
-		cerr << "mappingfile has to be set." << endl;
+		cerr << "mappingfile has to be set or parameters have to be privided by file or commandline." << endl;
+		exit(EXIT_FAILURE);
+	}
+
+	// check if output resolution is requested with premade mapping table
+	if (args.out_width != 0 && !args.map_path.empty())
+	{
+		cerr << "Changing the output resolution is only supported if calibration parameters are provided." << endl;
 		exit(EXIT_FAILURE);
 	}
 
@@ -435,26 +842,47 @@ void parse_args(int argc, char **argv, program_args &args)
 		cout << "Processing video files \"" << args.in_path_1 << "\" and \"" << args.in_path_2 << "\" with mapping table \"" << args.map_path << "\"." << endl;
 
 	DBG(
-		cout << "program arguments:"
+		cout << "parsed arguments:"
 			 << "\n  mode:               " << args.prog_mode
-			 << "\n  input 1:            " << args.in_path_1
-			 << "\n  input 2:            " << args.in_path_2
-			 << "\n  map:                " << args.map_path
-			 << "\n  output:             " << args.out_path
-			 << "\n  output extension:   " << args.out_extension
-			 << "\n  output codec:       " << args.out_codec
+			 << "\n  input:              "
+			 << "\n    1:                " << args.in_path_1
+			 << "\n    2:                " << args.in_path_2
+			 << "\n  parameters:         "
+			 << "\n    map:              " << args.map_path
+			 << "\n    path:             " << args.param_path
+			 << "\n    front:            "
+			 << "\n      offset:         "
+			 << "\n        x:            " << args.parameter.x_off_front
+			 << "\n        y:            " << args.parameter.y_off_front
+			 << "\n      rotation:       " << args.parameter.rot_front
+			 << "\n      radius:         " << args.parameter.radius_front
+			 << "\n    rear:             "
+			 << "\n      offset:         "
+			 << "\n        x:            " << args.parameter.x_off_rear
+			 << "\n        y:            " << args.parameter.y_off_rear
+			 << "\n      rotation:       " << args.parameter.rot_rear
+			 << "\n      radius:         " << args.parameter.radius_rear
+			 << "\n    front limit:      " << args.parameter.front_limit
+			 << "\n    blend limit:      " << args.parameter.blend_limit
+			 << "\n    blend size:       " << args.parameter.blend_size
+			 << "\n    orientation:      " << args.parameter.orientation
+			 << "\n  output:             "
+			 << "\n    path:             " << args.out_path
+			 << "\n    extension:        " << args.out_extension
+			 << "\n    odec:             " << args.out_codec
+			 << "\n    width:            " << args.out_width
+			 << "\n    height:           " << args.out_height
 			 << "\n  interpolation type: " << args.interpol_t
 			 << "\n  search range:       " << args.search_range
 			 << "\n  frameskip:          " << args.frameskip
 			 << "\n  number frames:      " << args.num_frames
 			 << "\n  preview:            " << args.preview
 			 << "\n  video indexing:     " << args.video_index
-			 << "\n  output width:       " << args.out_width
-			 << "\n  output height:      " << args.out_height
-			 << "\n  search x:           " << args.search_x
-			 << "\n  search y:           " << args.search_y
-			 << "\n  search width:       " << args.search_width
-			 << "\n  search height:      " << args.search_height
+			 << "\n  search region:      "
+			 << "\n    x:                " << args.search_x
+			 << "\n    y:                " << args.search_y
+			 << "\n    width:            " << args.search_width
+			 << "\n    height:           " << args.search_height
 			 << endl;
 	)
 }
@@ -477,11 +905,11 @@ void remap(const cv::Mat &in_1, const cv::Mat &in_2, const cv::Mat &map, cv::Mat
 		cuda_remap_li(in_1.data, in_2.data, out.data);
 	#else
 	#ifdef WITH_OPENCL
-	CL_ERROR_CHECK( extra_data.cmdq.enqueueWriteBuffer(extra_data.in_1, CL_TRUE, 0, in_1.dataend - in_1.datastart, in_1.data) );
-	CL_ERROR_CHECK( extra_data.cmdq.enqueueWriteBuffer(extra_data.in_2, CL_TRUE, 0, in_2.dataend - in_2.datastart, in_2.data) );
-	CL_ERROR_CHECK( extra_data.cmdq.enqueueNDRangeKernel(extra_data.k, 0, extra_data.global_size, extra_data.local_size) );
-	CL_ERROR_CHECK( extra_data.cmdq.finish() );
-	CL_ERROR_CHECK( extra_data.cmdq.enqueueReadBuffer(extra_data.out, CL_TRUE, 0, out.dataend - out.datastart, out.data) );
+	CL_RETERR_CHECK( extra_data.cmdq.enqueueWriteBuffer(extra_data.in_1, CL_TRUE, 0, in_1.dataend - in_1.datastart, in_1.data) );
+	CL_RETERR_CHECK( extra_data.cmdq.enqueueWriteBuffer(extra_data.in_2, CL_TRUE, 0, in_2.dataend - in_2.datastart, in_2.data) );
+	CL_RETERR_CHECK( extra_data.cmdq.enqueueNDRangeKernel(extra_data.k, 0, extra_data.global_size, extra_data.local_size) );
+	CL_RETERR_CHECK( extra_data.cmdq.finish() );
+	CL_RETERR_CHECK( extra_data.cmdq.enqueueReadBuffer(extra_data.out, CL_TRUE, 0, out.dataend - out.datastart, out.data) );
 	#else
 	cv::Vec<double, 14> mte;
 #pragma omp parallel for collapse(2) schedule(dynamic, 2048) private(mte)
@@ -498,6 +926,19 @@ void remap(const cv::Mat &in_1, const cv::Mat &in_2, const cv::Mat &map, cv::Mat
 	}
 	#endif
 	#endif
+}
+
+void remap(const cv::Mat &in_1, const cv::Mat &in_2, const cv::Mat &map, interpolation_type interpol_t, cv::Mat &out, extra_data &extra_data)
+{
+	switch (interpol_t)
+	{
+	case interpolation_type::NEAREST_NEIGHBOUR:
+		remap<interpolation_type::NEAREST_NEIGHBOUR>(in_1, in_2, map, out, extra_data);
+		break;
+	case interpolation_type::BILINEAR:
+		remap<interpolation_type::BILINEAR>(in_1, in_2, map, out, extra_data);
+		break;
+	}
 }
 
 /**
@@ -518,14 +959,27 @@ void remap(const cv::Mat &in, const cv::Mat &map, cv::Mat &out, extra_data &extr
 		cuda_remap_li(in.data, out.data);
 	#else
 	#ifdef WITH_OPENCL
-	CL_ERROR_CHECK( extra_data.cmdq.enqueueWriteBuffer(extra_data.in_1, CL_TRUE, 0, in.dataend - in.datastart, in.data) );
-	CL_ERROR_CHECK( extra_data.cmdq.enqueueNDRangeKernel(extra_data.k, 0, extra_data.global_size, extra_data.local_size) );
-	CL_ERROR_CHECK( extra_data.cmdq.finish() );
-	CL_ERROR_CHECK( extra_data.cmdq.enqueueReadBuffer(extra_data.out, CL_TRUE, 0, out.dataend - out.datastart, out.data) );
+	CL_RETERR_CHECK( extra_data.cmdq.enqueueWriteBuffer(extra_data.in_1, CL_TRUE, 0, in.dataend - in.datastart, in.data) );
+	CL_RETERR_CHECK( extra_data.cmdq.enqueueNDRangeKernel(extra_data.k, 0, extra_data.global_size, extra_data.local_size) );
+	CL_RETERR_CHECK( extra_data.cmdq.finish() );
+	CL_RETERR_CHECK( extra_data.cmdq.enqueueReadBuffer(extra_data.out, CL_TRUE, 0, out.dataend - out.datastart, out.data) );
 	#else
 	remap<interpol_t>(in(cv::Rect(0, 0, in.rows, in.rows)), in(cv::Rect(in.rows, 0, in.rows, in.rows)), map, out, extra_data);
 	#endif
 	#endif
+}
+
+void remap(const cv::Mat &in, const cv::Mat &map, interpolation_type interpol_t, cv::Mat &out, extra_data &extra_data)
+{
+	switch (interpol_t)
+	{
+	case interpolation_type::NEAREST_NEIGHBOUR:
+		remap<interpolation_type::NEAREST_NEIGHBOUR>(in, map, out, extra_data);
+		break;
+	case interpolation_type::BILINEAR:
+		remap<interpolation_type::BILINEAR>(in, map, out, extra_data);
+		break;
+	}
 }
 
 template <interpolation_type interpol_t, bool single_input>
@@ -574,23 +1028,26 @@ cv::Mat get_sharpest_image(cv::VideoCapture &in_1, cv::VideoCapture &in_2, const
 template <interpolation_type interpol_t, bool single_input, program_mode prog_m>
 void process_video(cv::VideoCapture &in_1, cv::VideoCapture &in_2, const cv::Mat &map, cv::Mat &equiframe, cv::VideoWriter &wrt, const program_args &args, extra_data &extra_data)
 {
-	cv::Mat frame_1, frame_2, grey, laplace, mean, stddev, best_frame, outframe;
+	cv::Mat frame_1, frame_2, grey, laplace, mean, stddev, best_frame;
 	cv::Size outres(args.out_width, args.out_height);
 	cv::Rect search_region(args.search_x * args.out_width, args.search_y * args.out_height,
 						   args.search_width * args.out_width, args.search_height * args.out_height);
 	double best_stddev = 0;
-	int key, out_idx = 0;
+	int key, out_idx = 0, best_idx;
 	size_t search_count = args.search_range / 2;
 	char full_out_path[args.out_path.size() + args.out_extension.size() + args.out_dec_len];
 	bool playing = prog_m != program_mode::INTERACTIVE, play_once = true;
 	TIMES
 	(
-		size_t mapping_count = 0, loading_count = 0, preview_count = 0, resize_count = 0, write_count = 0, skip_count = 0, laplace_count = 0, loop_count = 0;
-		double mapping_sum = 0, loading_sum = 0, preview_sum = 0, resize_sum = 0, write_sum = 0, skip_sum = 0, laplace_sum = 0, loop_sum = 0;
+		size_t mapping_count = 0, loading_count = 0, preview_count = 0, malloc_count = 0, write_count = 0, skip_count = 0, laplace_count = 0, loop_count = 0;
+		double mapping_sum = 0, loading_sum = 0, preview_sum = 0, malloc_sum = 0, write_sum = 0, skip_sum = 0, laplace_sum = 0, loop_sum = 0;
 		std::chrono::steady_clock::time_point mapping_start, mapping_end, loading_start, loading_end, preview_start, preview_end,
-											  resize_start, resize_end, write_start, write_end, skip_start, skip_end, laplace_start, laplace_end,
+											  malloc_start, malloc_end, write_start, write_end, skip_start, skip_end, laplace_start, laplace_end,
 											  loop_start, loop_end;
 	)
+	#pragma omp parallel
+	{
+	#pragma omp single
 	while ((key = cv::waitKey(1)) != 27)
 	{
 		TIMES(loop_start = std::chrono::steady_clock::now();)
@@ -614,6 +1071,11 @@ void process_video(cv::VideoCapture &in_1, cv::VideoCapture &in_2, const cv::Mat
 			TIMES(loading_end = std::chrono::steady_clock::now(); loading_count++;
 				  loading_sum += std::chrono::duration_cast<std::chrono::duration<double>>(loading_end - loading_start).count();)
 
+			TIMES(malloc_start = std::chrono::steady_clock::now();)
+			equiframe = cv::Mat(args.out_height, args.out_width, CV_8UC3);
+			TIMES(malloc_end = std::chrono::steady_clock::now(); malloc_count++;
+				  malloc_sum += std::chrono::duration_cast<std::chrono::duration<double>>(malloc_end - malloc_start).count();)
+
 			TIMES(mapping_start = std::chrono::steady_clock::now();)
 			if constexpr (single_input)
 				remap<interpol_t>(frame_1, map, equiframe, extra_data);
@@ -622,18 +1084,10 @@ void process_video(cv::VideoCapture &in_1, cv::VideoCapture &in_2, const cv::Mat
 			TIMES(mapping_end = std::chrono::steady_clock::now(); mapping_count++;
 				  mapping_sum += std::chrono::duration_cast<std::chrono::duration<double>>(mapping_end - mapping_start).count();)
 
-			TIMES(resize_start = std::chrono::steady_clock::now();)
-			if (args.out_width == map.cols && args.out_height == map.rows)
-				outframe = equiframe;
-			else
-				cv::resize(equiframe, outframe, outres, 0, 0, cv::INTER_AREA);
-			TIMES(resize_end = std::chrono::steady_clock::now(); resize_count++;
-				  resize_sum += std::chrono::duration_cast<std::chrono::duration<double>>(resize_end - resize_start).count();)
-
 			TIMES(preview_start = std::chrono::steady_clock::now();)
 			// Auf den Schirm Spoki
 			if (args.preview)
-				imshow(WINDOW_NAME, outframe);
+				imshow(WINDOW_NAME, equiframe);
 			TIMES(preview_end = std::chrono::steady_clock::now(); preview_count++;
 				  preview_sum += std::chrono::duration_cast<std::chrono::duration<double>>(preview_end - preview_start).count();)
 
@@ -652,12 +1106,13 @@ void process_video(cv::VideoCapture &in_1, cv::VideoCapture &in_2, const cv::Mat
 			case 'f':
 				playing = false;
 				if (args.search_range > 0)
-					outframe = get_sharpest_image<interpol_t, single_input>(in_1, in_2, map, extra_data, args.search_range / 2, args.search_range / 2, search_region);
-				imshow(WINDOW_NAME, outframe);
+					equiframe = get_sharpest_image<interpol_t, single_input>(in_1, in_2, map, extra_data, args.search_range / 2, args.search_range / 2, search_region);
+				imshow(WINDOW_NAME, equiframe);
 				break;
 			case 's':
 				sprintf(full_out_path, (args.out_path + args.out_extension).c_str(), out_idx);
-				cv::imwrite(full_out_path, outframe);
+				#pragma omp task firstprivate(full_out_path, equiframe)
+				cv::imwrite(full_out_path, equiframe);
 				out_idx++;
 				break;
 			case '.':
@@ -702,20 +1157,22 @@ void process_video(cv::VideoCapture &in_1, cv::VideoCapture &in_2, const cv::Mat
 			TIMES(laplace_start = std::chrono::steady_clock::now();)
 			if (args.search_range > 0)
 			{
-				cv::cvtColor(outframe(search_region), grey, cv::COLOR_BGR2GRAY);
+				cv::cvtColor(equiframe(search_region), grey, cv::COLOR_BGR2GRAY);
 				cv::Laplacian(grey, laplace, CV_64F);
 				cv::meanStdDev(laplace, mean, stddev);
 				DBG(cout << "stddev: " << stddev << endl;)
 				if (stddev.at<double>(0) > best_stddev)
 				{
-					best_frame = outframe;
+					best_frame = equiframe;
 					best_stddev = stddev.at<double>(0);
+					best_idx = in_1.get(cv::CAP_PROP_POS_FRAMES) - 1;
 				}
 				search_count++;
 			}
 			else
 			{
-				best_frame = outframe;
+				best_frame = equiframe;
+				best_idx = in_1.get(cv::CAP_PROP_POS_FRAMES) - 1;
 			}
 			TIMES(laplace_end = std::chrono::steady_clock::now(); laplace_count++;
 				  laplace_sum += std::chrono::duration_cast<std::chrono::duration<double>>(laplace_end - laplace_start).count();)
@@ -726,14 +1183,18 @@ void process_video(cv::VideoCapture &in_1, cv::VideoCapture &in_2, const cv::Mat
 				TIMES(write_start = std::chrono::steady_clock::now();)
 				if constexpr (prog_m == program_mode::VIDEO)
 				{
+					#pragma omp taskwait
+					#pragma omp task firstprivate(best_frame)
 					wrt.write(best_frame);
 				}
 				if constexpr (prog_m == program_mode::IMAGE)
 				{
-					sprintf(full_out_path, (args.out_path + args.out_extension).c_str(), out_idx);
-					cv::imwrite(full_out_path, best_frame);
 					if (args.video_index)
-						out_idx += args.frameskip;
+						out_idx = best_idx;
+					sprintf(full_out_path, (args.out_path + args.out_extension).c_str(), out_idx);
+					#pragma omp task firstprivate(full_out_path, best_frame)
+					cv::imwrite(full_out_path, best_frame);
+					DBG(cout << "Saved image: " << full_out_path << endl;)
 					out_idx++;
 				}
 				TIMES(write_end = std::chrono::steady_clock::now(); write_count++;
@@ -766,11 +1227,11 @@ void process_video(cv::VideoCapture &in_1, cv::VideoCapture &in_2, const cv::Mat
 		// print times
 		TIMES
 		(
-			if ((loop_count % 100) == 0 && loop_count != 0) {
-				printf("loop nr: %lu\n", loop_count);
+			if ((loading_count % 100) == 0 && loading_count != 0) {
+				printf("frame nr: %lu\n", loading_count);
 				printf("%8.4fms avg loading time\n", loading_sum / loading_count * 1000);
+				printf("%8.4fms avg malloc time\n", malloc_sum / malloc_count * 1000);
 				printf("%8.4fms avg mapping time\n", mapping_sum / mapping_count * 1000);
-				printf("%8.4fms avg resize time\n", resize_sum / resize_count * 1000);
 				printf("%8.4fms avg preview time\n", preview_sum / preview_count * 1000);
 				if constexpr (prog_m != program_mode::INTERACTIVE)
 				{
@@ -785,6 +1246,7 @@ void process_video(cv::VideoCapture &in_1, cv::VideoCapture &in_2, const cv::Mat
 			}
 		)
 	}
+	}
 }
 
 template <interpolation_type interpol_t>
@@ -796,13 +1258,17 @@ void process_input(program_args &args)
 
 	extra_data extra_data;
 	#ifdef WITH_OPENCL
-	extra_data.ctxt = cl::Context(CL_DEVICE_TYPE_GPU);
-	extra_data.cmdq = cl::CommandQueue(extra_data.ctxt);
-	extra_data.prog = cl::Program(extra_data.ctxt, string((char*) src_mapping_cl, src_mapping_cl_len), true);
+	CL_ARGERR_CHECK( extra_data.ctxt = cl::Context(CL_DEVICE_TYPE_GPU, NULL, NULL, NULL, &_cl_error) );
+	CL_ARGERR_CHECK( extra_data.cmdq = cl::CommandQueue(extra_data.ctxt, 0, &_cl_error) );
+	CL_ARGERR_CHECK( extra_data.prog = cl::Program(extra_data.ctxt, string((char*) src_mapping_cl, src_mapping_cl_len), true, &_cl_error) );
 	if constexpr (interpol_t == interpolation_type::NEAREST_NEIGHBOUR)
-		extra_data.k = cl::Kernel(extra_data.prog, "remap_nn");
+	{
+		CL_ARGERR_CHECK( extra_data.k = cl::Kernel(extra_data.prog, "remap_nn", &_cl_error) );
+	}
 	else if constexpr (interpol_t == interpolation_type::BILINEAR)
-		extra_data.k = cl::Kernel(extra_data.prog, "remap_li");
+	{
+		CL_ARGERR_CHECK( extra_data.k = cl::Kernel(extra_data.prog, "remap_li", &_cl_error) );
+	}
 	#endif
 
 	// create windows
@@ -814,29 +1280,6 @@ void process_input(program_args &args)
 
 	if (args.in_path_2.empty()) // one input
 	{
-		read_mapping_file<interpol_t, true>(args.map_path, mapping_table);
-
-		#ifdef WITH_CUDA
-		// allocate device memory and copy mapping table
-		init_device_memory(mapping_table.data, mapping_table.cols, mapping_table.rows);
-		#endif
-		#ifdef WITH_OPENCL
-		size_t elelen = mapping_table.rows * mapping_table.cols;
-		extra_data.global_size = cl::NDRange(elelen % extra_data::LOCAL_SIZE == 0 ? elelen : elelen + extra_data::LOCAL_SIZE - elelen % extra_data::LOCAL_SIZE);
-		extra_data.map = cl::Buffer(extra_data.ctxt, CL_MEM_READ_WRITE, mapping_table.dataend - mapping_table.datastart);
-		extra_data.in_1 = cl::Buffer(extra_data.ctxt, CL_MEM_READ_WRITE, elelen * 3);
-		extra_data.out = cl::Buffer(extra_data.ctxt, CL_MEM_READ_WRITE, elelen * 3);
-		CL_ERROR_CHECK( extra_data.k.setArg(0, extra_data.in_1) );
-		CL_ERROR_CHECK( extra_data.k.setArg(1, extra_data.in_1) );
-		CL_ERROR_CHECK( extra_data.k.setArg(2, extra_data.out) );
-		CL_ERROR_CHECK( extra_data.k.setArg(3, extra_data.map) );
-		CL_ERROR_CHECK( extra_data.k.setArg(4, (unsigned int) elelen) );
-		CL_ERROR_CHECK( extra_data.cmdq.enqueueWriteBuffer(extra_data.map, CL_TRUE, 0, mapping_table.dataend - mapping_table.datastart, mapping_table.data) );
-		#endif
-
-		// init output mat
-		equiframe.create(mapping_table.rows, mapping_table.cols, CV_8UC3);
-
 		// open video
 		cap_1.open(args.in_path_1);
 		if (!cap_1.isOpened())
@@ -853,13 +1296,52 @@ void process_input(program_args &args)
 			exit(EXIT_FAILURE);
 		}
 
-		// check resolution
-		if (frame_1.cols != mapping_table.cols || frame_1.rows != mapping_table.rows)
+		// set output resolution if none is set
+		if (args.out_width == 0 || args.out_height == 0)
 		{
-			cout << "Image(" << frame_1.cols << 'x' << frame_1.rows
-				 << ") and map(" << mapping_table.cols << 'x' << mapping_table.rows << ") resolution don't match." << endl;
-			exit(EXIT_FAILURE);
+			args.out_width = frame_1.cols;
+			args.out_height = frame_1.rows;
 		}
+
+		// read / generate mapping table
+		if (!args.map_path.empty())
+		{
+			read_mapping_file<interpol_t, true>(args.map_path, mapping_table);
+			// check resolution
+			if (frame_1.cols != mapping_table.cols || frame_1.rows != mapping_table.rows)
+			{
+				cout << "Image(" << frame_1.cols << 'x' << frame_1.rows
+					<< ") and map(" << mapping_table.cols << 'x' << mapping_table.rows << ") resolution doesn't match." << endl;
+				exit(EXIT_FAILURE);
+			}
+		}
+		else
+		{
+			if (!args.param_path.empty())
+				read_mapping_params(args.param_path, args.parameter);
+			gen_equi_mapping_table<interpol_t, true, true>(args.out_width, args.out_height, frame_1.rows, &args.parameter, mapping_table);
+		}
+
+		#ifdef WITH_CUDA
+		// allocate device memory and copy mapping table
+		init_device_memory(mapping_table.data, mapping_table.cols, mapping_table.rows);
+		#endif
+		#ifdef WITH_OPENCL
+		size_t elelen = mapping_table.rows * mapping_table.cols;
+		extra_data.global_size = cl::NDRange(elelen % extra_data::LOCAL_SIZE == 0 ? elelen : elelen + extra_data::LOCAL_SIZE - elelen % extra_data::LOCAL_SIZE);
+		CL_ARGERR_CHECK( extra_data.map = cl::Buffer(extra_data.ctxt, CL_MEM_READ_WRITE, mapping_table.dataend - mapping_table.datastart, NULL, &_cl_error) );
+		CL_ARGERR_CHECK( extra_data.in_1 = cl::Buffer(extra_data.ctxt, CL_MEM_READ_WRITE, elelen * 3, NULL, &_cl_error) );
+		CL_ARGERR_CHECK( extra_data.out = cl::Buffer(extra_data.ctxt, CL_MEM_READ_WRITE, elelen * 3, NULL, &_cl_error) );
+		CL_RETERR_CHECK( extra_data.k.setArg(0, extra_data.in_1) );
+		CL_RETERR_CHECK( extra_data.k.setArg(1, extra_data.in_1) );
+		CL_RETERR_CHECK( extra_data.k.setArg(2, extra_data.out) );
+		CL_RETERR_CHECK( extra_data.k.setArg(3, extra_data.map) );
+		CL_RETERR_CHECK( extra_data.k.setArg(4, (unsigned int) elelen) );
+		CL_RETERR_CHECK( extra_data.cmdq.enqueueWriteBuffer(extra_data.map, CL_TRUE, 0, mapping_table.dataend - mapping_table.datastart, mapping_table.data) );
+		#endif
+
+		// init output mat
+		equiframe.create(mapping_table.rows, mapping_table.cols, CV_8UC3);
 
 		// process single image
 		cap_1 >> frame_2;
@@ -871,13 +1353,6 @@ void process_input(program_args &args)
 				cv::imwrite(args.out_path+args.out_extension, equiframe);
 			cv::waitKey();
 			return;
-		}
-
-		// set output resolution if none is set
-		if (args.out_width == 0 || args.out_height == 0)
-		{
-			args.out_width = mapping_table.cols;
-			args.out_height = mapping_table.rows;
 		}
 
 		// calculate (max) number of output frames
@@ -938,30 +1413,6 @@ void process_input(program_args &args)
 	}
 	else // two inputs
 	{
-		read_mapping_file<interpol_t, false>(args.map_path, mapping_table);
-
-		#ifdef WITH_CUDA
-		// allocate device memory and copy mapping table
-		init_device_memory(mapping_table.data, mapping_table.cols, mapping_table.rows);
-		#endif
-		#ifdef WITH_OPENCL
-		size_t elelen = mapping_table.rows * mapping_table.cols;
-		extra_data.global_size = cl::NDRange(elelen % extra_data::LOCAL_SIZE == 0 ? elelen : elelen + extra_data::LOCAL_SIZE - elelen % extra_data::LOCAL_SIZE);
-		extra_data.map = cl::Buffer(extra_data.ctxt, CL_MEM_READ_WRITE, mapping_table.dataend - mapping_table.datastart);
-		extra_data.in_1 = cl::Buffer(extra_data.ctxt, CL_MEM_READ_WRITE, elelen * 3);
-		extra_data.in_2 = cl::Buffer(extra_data.ctxt, CL_MEM_READ_WRITE, elelen * 3);
-		extra_data.out = cl::Buffer(extra_data.ctxt, CL_MEM_READ_WRITE, elelen * 3);
-		CL_ERROR_CHECK( extra_data.k.setArg(0, extra_data.in_1) );
-		CL_ERROR_CHECK( extra_data.k.setArg(1, extra_data.in_2) );
-		CL_ERROR_CHECK( extra_data.k.setArg(2, extra_data.out) );
-		CL_ERROR_CHECK( extra_data.k.setArg(3, extra_data.map) );
-		CL_ERROR_CHECK( extra_data.k.setArg(4, (unsigned int) elelen) );
-		CL_ERROR_CHECK( extra_data.cmdq.enqueueWriteBuffer(extra_data.map, CL_TRUE, 0, mapping_table.dataend - mapping_table.datastart, mapping_table.data) );
-		#endif
-
-		// init output mat
-		equiframe.create(mapping_table.rows, mapping_table.cols, CV_8UC3);
-
 		// open video
 		cap_1.open(args.in_path_1);
 		cap_2.open(args.in_path_2);
@@ -982,13 +1433,53 @@ void process_input(program_args &args)
 		if (frame_1.empty() || frame_2.empty())
 			exit(EXIT_FAILURE);
 
-		// check resolution
-		if (frame_1.cols * 2 != mapping_table.cols || frame_1.rows != mapping_table.rows || frame_2.cols * 2 != mapping_table.cols || frame_2.rows != mapping_table.rows)
+		// set output resolution if none is set
+		if (args.out_width == 0 || args.out_height == 0)
 		{
-			cout << "Image1(" << frame_1.cols << 'x' << frame_1.rows << "), Image2(" << frame_2.cols << 'x' << frame_2.rows
-				 << ") and map(" << mapping_table.cols << 'x' << mapping_table.rows << ") resolution don't match." << endl;
-			exit(EXIT_FAILURE);
+			args.out_width = frame_1.cols * 2;
+			args.out_height = frame_1.rows;
 		}
+
+		// read / generate mapping table
+		if (!args.map_path.empty())
+		{
+			read_mapping_file<interpol_t, false>(args.map_path, mapping_table);
+			// check resolution
+			if (frame_1.cols * 2 != mapping_table.cols || frame_1.rows != mapping_table.rows || frame_2.cols * 2 != mapping_table.cols || frame_2.rows != mapping_table.rows)
+			{
+				cout << "Image1(" << frame_1.cols << 'x' << frame_1.rows << "), Image2(" << frame_2.cols << 'x' << frame_2.rows
+					<< ") and map(" << mapping_table.cols << 'x' << mapping_table.rows << ") resolution doesn't match." << endl;
+				exit(EXIT_FAILURE);
+			}
+		}
+		else
+		{
+			if (!args.param_path.empty())
+				read_mapping_params(args.param_path, args.parameter);
+			gen_equi_mapping_table<interpol_t, false, true>(args.out_width, args.out_height, frame_1.rows, &args.parameter, mapping_table);
+		}
+
+		#ifdef WITH_CUDA
+		// allocate device memory and copy mapping table
+		init_device_memory(mapping_table.data, mapping_table.cols, mapping_table.rows);
+		#endif
+		#ifdef WITH_OPENCL
+		size_t elelen = mapping_table.rows * mapping_table.cols;
+		extra_data.global_size = cl::NDRange(elelen % extra_data::LOCAL_SIZE == 0 ? elelen : elelen + extra_data::LOCAL_SIZE - elelen % extra_data::LOCAL_SIZE);
+		CL_ARGERR_CHECK( extra_data.map = cl::Buffer(extra_data.ctxt, CL_MEM_READ_WRITE, mapping_table.dataend - mapping_table.datastart, NULL, &_cl_error) );
+		CL_ARGERR_CHECK( extra_data.in_1 = cl::Buffer(extra_data.ctxt, CL_MEM_READ_WRITE, elelen * 3, NULL, &_cl_error) );
+		CL_ARGERR_CHECK( extra_data.in_2 = cl::Buffer(extra_data.ctxt, CL_MEM_READ_WRITE, elelen * 3, NULL, &_cl_error) );
+		CL_ARGERR_CHECK( extra_data.out = cl::Buffer(extra_data.ctxt, CL_MEM_READ_WRITE, elelen * 3, NULL, &_cl_error) );
+		CL_RETERR_CHECK( extra_data.k.setArg(0, extra_data.in_1) );
+		CL_RETERR_CHECK( extra_data.k.setArg(1, extra_data.in_2) );
+		CL_RETERR_CHECK( extra_data.k.setArg(2, extra_data.out) );
+		CL_RETERR_CHECK( extra_data.k.setArg(3, extra_data.map) );
+		CL_RETERR_CHECK( extra_data.k.setArg(4, (unsigned int) elelen) );
+		CL_RETERR_CHECK( extra_data.cmdq.enqueueWriteBuffer(extra_data.map, CL_TRUE, 0, mapping_table.dataend - mapping_table.datastart, mapping_table.data) );
+		#endif
+
+		// init output mat
+		equiframe.create(mapping_table.rows, mapping_table.cols, CV_8UC3);
 
 		// process single image
 		if (!cap_1.grab())
@@ -1006,13 +1497,6 @@ void process_input(program_args &args)
 		{
 			cerr << "Input 1 and 2 differ in length." << endl;
 			exit(EXIT_FAILURE);
-		}
-
-		// set output resolution if none is set
-		if (args.out_width == 0 || args.out_height == 0)
-		{
-			args.out_width = mapping_table.cols;
-			args.out_height = mapping_table.rows;
 		}
 
 		// calculate (max) number of output frames
@@ -1137,46 +1621,48 @@ void mapper::init(interpolation_type interpol_t, size_t buffer_length)
 	this->good = true;
 
 	#ifdef WITH_OPENCL
-	this->edata.ctxt = cl::Context(CL_DEVICE_TYPE_GPU);
-	this->edata.cmdq = cl::CommandQueue(this->edata.ctxt);
-	this->edata.prog = cl::Program(this->edata.ctxt, string((char*) src_mapping_cl, src_mapping_cl_len), true);
+	CL_ARGERR_CHECK( this->edata.ctxt = cl::Context(CL_DEVICE_TYPE_GPU, NULL, NULL, NULL, &_cl_error) );
+	CL_ARGERR_CHECK( this->edata.cmdq = cl::CommandQueue(this->edata.ctxt, 0, &_cl_error) );
+	CL_ARGERR_CHECK( this->edata.prog = cl::Program(this->edata.ctxt, string((char*) src_mapping_cl, src_mapping_cl_len), true, &_cl_error) );
 	
 	size_t elelen = this->map.rows * this->map.cols;
 	this->edata.global_size = cl::NDRange(elelen % extra_data::LOCAL_SIZE == 0 ? elelen : elelen + extra_data::LOCAL_SIZE - elelen % extra_data::LOCAL_SIZE);
-	this->edata.map = cl::Buffer(this->edata.ctxt, CL_MEM_READ_WRITE, this->map.dataend - this->map.datastart);
+	CL_ARGERR_CHECK( this->edata.map = cl::Buffer(this->edata.ctxt, CL_MEM_READ_WRITE, this->map.dataend - this->map.datastart, NULL, &_cl_error) );
 	if constexpr (single_input)
-		this->edata.in_1 = cl::Buffer(this->edata.ctxt, CL_MEM_READ_WRITE, elelen * 3);
+	{
+		CL_ARGERR_CHECK( this->edata.in_1 = cl::Buffer(this->edata.ctxt, CL_MEM_READ_WRITE, elelen * 3, NULL, &_cl_error) );
+	}
 	else
 	{
-		this->edata.in_1 = cl::Buffer(this->edata.ctxt, CL_MEM_READ_WRITE, elelen * 3 / 2);
-		this->edata.in_2 = cl::Buffer(this->edata.ctxt, CL_MEM_READ_WRITE, elelen * 3 / 2);
+		CL_ARGERR_CHECK( this->edata.in_1 = cl::Buffer(this->edata.ctxt, CL_MEM_READ_WRITE, elelen * 3 / 2, NULL, &_cl_error) );
+		CL_ARGERR_CHECK( this->edata.in_2 = cl::Buffer(this->edata.ctxt, CL_MEM_READ_WRITE, elelen * 3 / 2, NULL, &_cl_error) );
 	}
-	this->edata.out = cl::Buffer(this->edata.ctxt, CL_MEM_READ_WRITE, elelen * 3);
+	CL_ARGERR_CHECK( this->edata.out = cl::Buffer(this->edata.ctxt, CL_MEM_READ_WRITE, elelen * 3, NULL, &_cl_error) );
 	switch (interpol_t)
 	{
 	case interpolation_type::NEAREST_NEIGHBOUR:
-		this->edata.k = cl::Kernel(this->edata.prog, "remap_nn");
+		CL_ARGERR_CHECK( this->edata.k = cl::Kernel(this->edata.prog, "remap_nn", &_cl_error) );
 		break;
 	case interpolation_type::BILINEAR:
-		this->edata.k = cl::Kernel(this->edata.prog, "remap_li");
+		CL_ARGERR_CHECK( this->edata.k = cl::Kernel(this->edata.prog, "remap_li", &_cl_error) );
 		break;
 	default:
 		throw invalid_argument("Interpolation type not supported.");
 		break;
 	}
-	CL_ERROR_CHECK( this->edata.k.setArg(0, this->edata.in_1) );
+	CL_RETERR_CHECK( this->edata.k.setArg(0, this->edata.in_1) );
 	if constexpr (single_input)
 	{
-		CL_ERROR_CHECK( this->edata.k.setArg(1, this->edata.in_1) );
+		CL_RETERR_CHECK( this->edata.k.setArg(1, this->edata.in_1) );
 	}
 	else
 	{
-		CL_ERROR_CHECK( this->edata.k.setArg(1, this->edata.in_2) );
+		CL_RETERR_CHECK( this->edata.k.setArg(1, this->edata.in_2) );
 	}
-	CL_ERROR_CHECK( this->edata.k.setArg(2, this->edata.out) );
-	CL_ERROR_CHECK( this->edata.k.setArg(3, this->edata.map) );
-	CL_ERROR_CHECK( this->edata.k.setArg(4, (unsigned int) elelen) );
-	CL_ERROR_CHECK( this->edata.cmdq.enqueueWriteBuffer(this->edata.map, CL_TRUE, 0, this->map.dataend - this->map.datastart, this->map.data) );
+	CL_RETERR_CHECK( this->edata.k.setArg(2, this->edata.out) );
+	CL_RETERR_CHECK( this->edata.k.setArg(3, this->edata.map) );
+	CL_RETERR_CHECK( this->edata.k.setArg(4, (unsigned int) elelen) );
+	CL_RETERR_CHECK( this->edata.cmdq.enqueueWriteBuffer(this->edata.map, CL_TRUE, 0, this->map.dataend - this->map.datastart, this->map.data) );
 	#endif
 
 	switch (interpol_t)

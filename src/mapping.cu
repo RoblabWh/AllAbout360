@@ -123,6 +123,31 @@ void cuda_remap(const unsigned char *in_1, const unsigned char *in_2, unsigned c
     CUDA_ERROR_CHECK( cudaMemcpy(out, d_odata, h_memlen, cudaMemcpyDeviceToHost) );
 }
 
+void cuda_remap(const unsigned char *in, interpolation_type interpol_t, unsigned char *out)
+{
+    switch (interpol_t)
+	{
+	case interpolation_type::NEAREST_NEIGHBOUR:
+        cuda_remap<interpolation_type::NEAREST_NEIGHBOUR>(in, out);
+		break;
+	case interpolation_type::BILINEAR:
+        cuda_remap<interpolation_type::BILINEAR>(in, out);
+		break;
+	}
+}
+void cuda_remap(const unsigned char *in_1, const unsigned char *in_2, interpolation_type interpol_t, unsigned char *out)
+{
+    switch (interpol_t)
+	{
+	case interpolation_type::NEAREST_NEIGHBOUR:
+        cuda_remap<interpolation_type::NEAREST_NEIGHBOUR>(in_1, in_2, out);
+		break;
+	case interpolation_type::BILINEAR:
+        cuda_remap<interpolation_type::BILINEAR>(in_1, in_2, out);
+		break;
+	}
+}
+
 void cuda_remap_nn(const unsigned char *in, unsigned char *out) { cuda_remap<interpolation_type::NEAREST_NEIGHBOUR>(in, out); }
 void cuda_remap_li(const unsigned char *in, unsigned char *out) { cuda_remap<interpolation_type::BILINEAR>(in, out); }
 void cuda_remap_nn(const unsigned char *in_1, const unsigned char *in_2, unsigned char *out) { cuda_remap<interpolation_type::NEAREST_NEIGHBOUR>(in_1, in_2, out); }

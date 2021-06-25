@@ -9,7 +9,7 @@
 #include <opencv2/opencv.hpp>
 
 #ifdef WITH_OPENCL
-#include <CL/cl2.hpp>
+#include <CL/cl.hpp>
 #endif
 
 #ifdef DEBUG
@@ -23,6 +23,16 @@
 #else
 #define TIMES(E...)
 #endif
+
+/**
+ * @brief Holds calibration parameters
+ */
+struct calib_params
+{
+	double x_off_front, y_off_front, rot_front, radius_front,
+		x_off_rear, y_off_rear, rot_rear, radius_rear,
+		front_limit, blend_limit, blend_size, orientation;
+};
 
 enum interpolation_type
 {
@@ -56,6 +66,10 @@ struct extra_data
 struct extra_data {};
 #endif
 #endif
+
+void gen_equi_mapping_table(int width, int height, int in_height, interpolation_type interpol_t, bool single_input, bool expand, const calib_params *const params, cv::Mat &mapping_table);
+void remap(const cv::Mat &in, const cv::Mat &map, interpolation_type interpol_t, cv::Mat &out, extra_data &extra_data);
+void remap(const cv::Mat &in_1, const cv::Mat &in_2, const cv::Mat &map, interpolation_type interpol_t, cv::Mat &out, extra_data &extra_data);
 
 class mapper //TODO CUDA
 {
@@ -155,6 +169,9 @@ void cuda_remap_nn(const unsigned char *in, unsigned char *out);
 void cuda_remap_li(const unsigned char *in, unsigned char *out);
 void cuda_remap_nn(const unsigned char *in_1, const unsigned char *in_2, unsigned char *out);
 void cuda_remap_li(const unsigned char *in_1, const unsigned char *in_2, unsigned char *out);
+
+void cuda_remap(const unsigned char *in_1, const unsigned char *in_2, interpolation_type interpol_t, unsigned char *out);
+void cuda_remap(const unsigned char *in, interpolation_type interpol_t, unsigned char *out);
 #endif
 
 #endif

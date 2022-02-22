@@ -94,7 +94,7 @@ double inline deg2rad(double deg) { return deg * M_PI / 180.; }
 
 /**
  * @brief Parses the arguments given in commandline
- * 
+ *
  * @param argc argc from main
  * @param argv argv from main
  * @param args parsed arguments
@@ -440,7 +440,7 @@ int main(int argc, char **argv)
 	CL_ARGERR_CHECK( extra_data.ctxt = cl::Context(CL_DEVICE_TYPE_GPU, NULL, NULL, NULL, &_cl_error); )
 	CL_ARGERR_CHECK( extra_data.cmdq = cl::CommandQueue(extra_data.ctxt, 0, &_cl_error); )
 	CL_ARGERR_CHECK( extra_data.prog = cl::Program(extra_data.ctxt, string((char*) src_mapping_cl, src_mapping_cl_len), true, &_cl_error); )
-	CL_ARGERR_CHECK( extra_data.k = cl::Kernel(extra_data.prog, "remap_nn", &_cl_error); )
+	CL_ARGERR_CHECK( extra_data.k = cl::Kernel(extra_data.prog, "remap_nearest", &_cl_error); )
 	size_t elelen = width * height;
 	extra_data.global_size = cl::NDRange(elelen % extra_data::LOCAL_SIZE == 0 ? elelen : elelen + extra_data::LOCAL_SIZE - elelen % extra_data::LOCAL_SIZE);
 	CL_ARGERR_CHECK( extra_data.map = cl::Buffer(extra_data.ctxt, CL_MEM_READ_WRITE, elelen * 14 * 8, NULL, &_cl_error); )
@@ -594,16 +594,16 @@ int main(int argc, char **argv)
 
 		// mapping
 		TIMES(genm_s = chrono::steady_clock::now();)
-		gen_equi_mapping_table(width, height, height, NEAREST_NEIGHBOUR, args.is_single_input, true, &params, mapping_table);
+		gen_equi_mapping_table(width, height, height, cv::INTER_NEAREST, args.is_single_input, true, &params, mapping_table);
 		#ifdef WITH_OPENCL
 		CL_RETERR_CHECK( extra_data.cmdq.enqueueWriteBuffer(extra_data.map, CL_TRUE, 0, mapping_table.dataend - mapping_table.datastart, mapping_table.data) );
 		#endif
 		TIMES(genm_e = chrono::steady_clock::now(); genm_sum += chrono::duration_cast<std::chrono::duration<double>>(genm_e - genm_s).count();)
 		TIMES(rmap_s = chrono::steady_clock::now();)
 		if (args.is_single_input)
-			remap(frame, mapping_table, NEAREST_NEIGHBOUR, equiframe, extra_data);
+			remap(frame, mapping_table, cv::INTER_NEAREST, equiframe, extra_data);
 		else
-			remap(frame_front, frame_rear, mapping_table, NEAREST_NEIGHBOUR, equiframe, extra_data);
+			remap(frame_front, frame_rear, mapping_table, cv::INTER_NEAREST, equiframe, extra_data);
 		TIMES(rmap_e = chrono::steady_clock::now(); rmap_sum += chrono::duration_cast<std::chrono::duration<double>>(rmap_e - rmap_s).count();)
 
 		// Auf den Schirm Spoki
@@ -709,7 +709,7 @@ int main(int argc, char **argv)
 		else
 		{
 			mte_t mte;
-			gen_equi_mapping_table(width, height, height, NEAREST_NEIGHBOUR, args.is_single_input, false, &params, mapping_table);
+			gen_equi_mapping_table(width, height, height, cv::INTER_NEAREST, args.is_single_input, false, &params, mapping_table);
 			output_file << width << ' ' << height << '\n';
 			for (j = 0; j < height; j++)
 			{

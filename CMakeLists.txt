@@ -75,7 +75,7 @@ function(mapping_with_opencl target_name)
 						DEPENDS src/mapping.cl
 						WORKING_DIRECTORY ${PROJECT_SOURCE_DIR})
 		add_custom_target(generate-mapping.cl.h DEPENDS build/mapping.cl.h)
-		
+
 		add_executable(${target_name}-mapper src/mapping.cpp)
 		if (OpenMP_CXX_FOUND)
 			target_link_libraries(${target_name}-mapper PUBLIC OpenMP::OpenMP_CXX ${OpenCV_LIBS} ${OpenCL_LIBRARIES} -lpthread)
@@ -96,7 +96,6 @@ function(mapping_with_opencl target_name)
 	else()
 		message("OpenCL not available")
 	endif()
-	
 endfunction()
 
 #----------------------------------------------------------------------------------#
@@ -162,14 +161,6 @@ if (OpenMP_CXX_FOUND)
 else()
 	target_link_libraries(${PROJECT_NAME}-calibration ${OpenCV_LIBS} ${PROJECT_NAME}-mapping)
 endif()
-
-# # create stereo calibration target
-# add_executable(${PROJECT_NAME}-stereo-calibration src/stereo.cpp)
-# if (OpenMP_CXX_FOUND)
-# 	target_link_libraries(${PROJECT_NAME}-stereo-calibration OpenMP::OpenMP_CXX ${OpenCV_LIBS} ${PROJECT_NAME}-mapping)
-# else()
-# 	target_link_libraries(${PROJECT_NAME}-stereo-calibration ${OpenCV_LIBS} ${PROJECT_NAME}-mapping)
-# endif()
 
 # create example usage
 if (NOT ${PARALLELIZATION} STREQUAL "CUDA")

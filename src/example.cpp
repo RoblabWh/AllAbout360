@@ -13,9 +13,9 @@ int main(int argc, char **argv)
 
 	mapper *mapr;
 	if (argc == 3)
-		mapr = new mapper(argv[1], argv[2], 0, interpolation_type::BILINEAR);
+		mapr = new mapper(argv[1], argv[2], 0, cv::INTER_LINEAR);
 	else
-		mapr = new mapper(argv[1], argv[2], argv[3], 30, interpolation_type::NEAREST_NEIGHBOUR);
+		mapr = new mapper(argv[1], argv[2], argv[3], 30, cv::INTER_NEAREST);
 
 	cv::Mat img;
 	TIMES( chrono::steady_clock::time_point lo_s, lo_e; double lo_sum; long fc = 0; )
@@ -36,7 +36,7 @@ int main(int argc, char **argv)
 		TIMES( lo_e = chrono::steady_clock::now(); lo_sum += std::chrono::duration_cast<std::chrono::duration<double>>(lo_e - lo_s).count(); )
 		TIMES( fc++; if (fc % 150 == 0) {printf("\nmain frame: %ld\nloop=%fms, %ffps", fc, lo_sum / fc * 1000, fc / lo_sum);} )
 	}
-	
+
 	delete mapr;
 	DBG( cout << "mapper successfully deleted" << endl; )
 	return EXIT_SUCCESS;

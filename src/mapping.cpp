@@ -144,7 +144,7 @@ void read_mapping_params(string path, calib_params &params)
 	}
 	file >> params.x_off_front >> params.y_off_front >> params.radius_front >> params.rot_front
 		 >> params.x_off_rear >> params.y_off_rear >> params.radius_rear >> params.rot_rear
-		 >> params.front_limit >> params.blend_limit >> params.blend_size >> params.orientation;
+		 >> params.front_limit >> params.blend_limit >> params.blend_size >> params.orientation >> params.time_offset;
 	if (file.fail())
 	{
 		cerr << "Wasn't able to read all parameters from file \"" << path << "\"." << endl;
@@ -173,6 +173,7 @@ void read_mapping_params(string path, calib_params &params)
 		 << "\n  front limit: " << params.front_limit
 		 << "\n  blend limit: " << params.blend_limit
 		 << "\n  blend size:  " << params.blend_size
+		 << "\n  time offset: " << params.time_offset
 		 << "\n";
 	)
 }
@@ -181,14 +182,15 @@ void read_mapping_params(string path, calib_params &params)
  * @brief Checks if x, y are in range of height and limits them if not.
  * @param x
  * @param y
+ * @param width
  * @param height
  */
-void clip_borders(double &x, double &y, unsigned int height, unsigned char cutoff = 1)
+void clip_borders(double &x, double &y, unsigned int width, unsigned int height, unsigned char cutoff = 1)
 {
 	if (x < 0)
 		x = 0;
-	else if (x > height - cutoff)
-		x = height - cutoff;
+	else if (x > width - cutoff)
+		x = width - cutoff;
 	if (y < 0)
 		y = 0;
 	else if (y > height - cutoff)
@@ -201,12 +203,13 @@ void clip_borders(double &x, double &y, unsigned int height, unsigned char cutof
  * @param p_x 3D normalised cartesian vector x part
  * @param p_y 3D normalised cartesian vector y part
  * @param p_z 3D normalised cartesian vector z part
+ * @param width number of cols in input image
  * @param height number of rows in input image
  * @param params calibration parameters
  * @return Vec5d Indices for both fisheye images and the blend factor
  */
 template<cv::InterpolationFlags interpol_t, bool single_input, bool expand, typename T>
-T cart3D_idxDFE(double p_x, double p_y, double p_z, int height, const calib_params *const params)
+T cart3D_idxDFE(double p_x, double p_y, double p_z, int width, int height, const calib_params *const params)
 {
 	// polar normalised fisheye coordinates
 	// a = angle from +x or -x axis
@@ -216,6 +219,7 @@ T cart3D_idxDFE(double p_x, double p_y, double p_z, int height, const calib_para
 	double bf;   // blend factor
 	double x1, y1, x2, y2; // fisheye index
 	T mte; // mapping table entry
+	int size = width > height ? width : height;
 
 	unsigned char cutoff;
 	switch (interpol_t)
@@ -237,9 +241,9 @@ T cart3D_idxDFE(double p_x, double p_y, double p_z, int height, const calib_para
 		r = a / M_PI_2 * params->radius_front;
 		t = atan2(p_z, p_y) + params->rot_front;
 
-		x1 = ((r * cos(t)) + 1) / 2 * height + params->x_off_front;
-		y1 = ((r * sin(t)) + 1) / 2 * height + params->y_off_front;
-		clip_borders(x1, y1, height, cutoff);
+		x1 = (r * cos(t) * size + width) / 2 + params->x_off_front;
+		y1 = (r * sin(t) * size + height) / 2 + params->y_off_front;
+		clip_borders(x1, y1, width, height, cutoff);
 		x2 = 0;
 		y2 = 0;
 		bf = 1;
@@ -250,9 +254,9 @@ T cart3D_idxDFE(double p_x, double p_y, double p_z, int height, const calib_para
 		r = a / M_PI_2 * params->radius_front;
 		t = atan2(p_z, p_y) + params->rot_front;
 
-		x1 = (r * cos(t) + 1) / 2 * height + params->x_off_front;
-		y1 = (r * sin(t) + 1) / 2 * height + params->y_off_front;
-		clip_borders(x1, y1, height, cutoff);
+		x1 = (r * cos(t) * size + width) / 2 + params->x_off_front;
+		y1 = (r * sin(t) * size + height) / 2 + params->y_off_front;
+		clip_borders(x1, y1, width, height, cutoff);
 
 		bf = 1 - ((a - params->front_limit) / params->blend_size);
 
@@ -260,18 +264,18 @@ T cart3D_idxDFE(double p_x, double p_y, double p_z, int height, const calib_para
 		r = (M_PI - a) / M_PI_2 * params->radius_rear;
 		t = atan2(p_z, -p_y) + params->rot_rear;
 
-		x2 = (r * cos(t) + 1) / 2 * height + params->x_off_rear;
-		y2 = (r * sin(t) + 1) / 2 * height + params->y_off_rear;
-		clip_borders(x2, y2, height, cutoff);
+		x2 = (r * cos(t) * size + width) / 2 + params->x_off_rear;
+		y2 = (r * sin(t) * size + height) / 2 + params->y_off_rear;
+		clip_borders(x2, y2, width, height, cutoff);
 	}
 	else // rear
 	{
 		r = (M_PI - a) / M_PI_2 * params->radius_rear;
 		t = atan2(p_z, -p_y) + params->rot_rear;
 
-		x2 = (r * cos(t) + 1) / 2 * height + params->x_off_rear;
-		y2 = (r * sin(t) + 1) / 2 * height + params->y_off_rear;
-		clip_borders(x2, y2, height, cutoff);
+		x2 = (r * cos(t) * size + width) / 2 + params->x_off_rear;
+		y2 = (r * sin(t) * size + height) / 2 + params->y_off_rear;
+		clip_borders(x2, y2, width, height, cutoff);
 
 		x1 = 0;
 		y1 = 0;
@@ -319,13 +323,13 @@ T cart3D_idxDFE(double p_x, double p_y, double p_z, int height, const calib_para
 
 		if constexpr (single_input)
 		{
-			i1 = height * 2 * yi1 + xi1;
-			i2 = height * 2 * yi2 + xi2 + height;
+			i1 = width * 2 * yi1 + xi1;
+			i2 = width * 2 * yi2 + xi2 + width;
 		}
 		else
 		{
-			i1 = height * yi1 + xi1;
-			i2 = height * yi2 + xi2;
+			i1 = width * yi1 + xi1;
+			i2 = width * yi2 + xi2;
 		}
 
 		#ifdef ON_GPU
@@ -340,13 +344,16 @@ T cart3D_idxDFE(double p_x, double p_y, double p_z, int height, const calib_para
 }
 
 template<cv::InterpolationFlags interpol_t, bool single_input, bool expand>
-void gen_equi_mapping_table(int width, int height, int in_height, const calib_params *const params, cv::Mat &mapping_table)
+void gen_equi_mapping_table(int width, int height, int in_width, int in_height, const calib_params *const params, cv::Mat &mapping_table)
 {
 	int i, j;			  // equirectangular index
 	double phi, theta;	  // equirectangular polar and azimuthal angle
 	double p_x, p_y, p_z; // 3D normalised cartesian fisheye vector
 
-	// DBG(cout << "mappingtable size: " << width << 'x' << height << endl;)
+	double ratio = in_width > in_height ? (double) in_height / (double) in_width : (double) in_width / (double) in_height;
+	double ratio_width = in_width > in_height ? 1 : ratio, ratio_height = in_width > in_height ? ratio : 1;
+	double ratio_width_offset = M_PI * (1 - ratio_width) / 2, ratio_height_offset = M_PI * (1 - ratio_height) / 2;
+
 	#ifdef ON_GPU
 	if constexpr (interpol_t == cv::INTER_NEAREST)
 		mapping_table.create(height, width, CV_32FC(4));
@@ -362,10 +369,10 @@ void gen_equi_mapping_table(int width, int height, int in_height, const calib_pa
 	#pragma omp parallel for private(i, j, phi, theta, p_x, p_y, p_z)
 	for (j = 0; j < height; j++)
 	{
-		theta = (1.0 - ((double)j / (double)height)) * M_PI;
+		theta = (1.0 - ((double)j / (double)height)) * M_PI * ratio_height + ratio_height_offset;
 		for (i = 0; i < width; i++)
 		{
-			phi = (double)i / (double)width * 2.0 * M_PI - params->orientation;
+			phi = (double)i / (double)width * 2.0 * M_PI * ratio_width + ratio_width_offset - params->orientation;
 
 			p_x = cos(phi) * sin(theta);
 			p_y = sin(phi) * sin(theta);
@@ -373,20 +380,20 @@ void gen_equi_mapping_table(int width, int height, int in_height, const calib_pa
 
 			#ifdef ON_GPU
 			if constexpr (interpol_t == cv::INTER_NEAREST)
-				mapping_table.at<cv::Vec<float, 4>>(j, i) = cart3D_idxDFE<interpol_t, single_input, expand, cv::Vec<float, 4>>(p_x, p_y, p_z, in_height, params);
+				mapping_table.at<cv::Vec<float, 4>>(j, i) = cart3D_idxDFE<interpol_t, single_input, expand, cv::Vec<float, 4>>(p_x, p_y, p_z, in_width, in_height, params);
 			else if constexpr (interpol_t == cv::INTER_LINEAR)
-				mapping_table.at<cv::Vec<float, 10>>(j, i) = cart3D_idxDFE<interpol_t, single_input, expand, cv::Vec<float, 10>>(p_x, p_y, p_z, in_height, params);
+				mapping_table.at<cv::Vec<float, 10>>(j, i) = cart3D_idxDFE<interpol_t, single_input, expand, cv::Vec<float, 10>>(p_x, p_y, p_z, in_width, in_height, params);
 			#else
 			if constexpr (interpol_t == cv::INTER_NEAREST)
-				mapping_table.at<cv::Vec<double, 4>>(j, i) = cart3D_idxDFE<interpol_t, single_input, expand, cv::Vec<double, 4>>(p_x, p_y, p_z, in_height, params);
+				mapping_table.at<cv::Vec<double, 4>>(j, i) = cart3D_idxDFE<interpol_t, single_input, expand, cv::Vec<double, 4>>(p_x, p_y, p_z, in_width, in_height, params);
 			else if constexpr (interpol_t == cv::INTER_LINEAR)
-				mapping_table.at<cv::Vec<double, 10>>(j, i) = cart3D_idxDFE<interpol_t, single_input, expand, cv::Vec<double, 10>>(p_x, p_y, p_z, in_height, params);
+				mapping_table.at<cv::Vec<double, 10>>(j, i) = cart3D_idxDFE<interpol_t, single_input, expand, cv::Vec<double, 10>>(p_x, p_y, p_z, in_width, in_height, params);
 			#endif
 		}
 	}
 }
 
-void gen_equi_mapping_table(int width, int height, int in_height, cv::InterpolationFlags interpol_t, bool single_input, bool expand, const calib_params *const params, cv::Mat &mapping_table)
+void gen_equi_mapping_table(int width, int height, int in_width, int in_height, cv::InterpolationFlags interpol_t, bool single_input, bool expand, const calib_params *const params, cv::Mat &mapping_table)
 {
 	if (single_input)
 	{
@@ -395,10 +402,10 @@ void gen_equi_mapping_table(int width, int height, int in_height, cv::Interpolat
 			switch (interpol_t)
 			{
 			case cv::INTER_NEAREST:
-				gen_equi_mapping_table<cv::INTER_NEAREST, true, true>(width, height, in_height, params, mapping_table);
+				gen_equi_mapping_table<cv::INTER_NEAREST, true, true>(width, height, in_width, in_height, params, mapping_table);
 				break;
 			case cv::INTER_LINEAR:
-				gen_equi_mapping_table<cv::INTER_LINEAR, true, true>(width, height, in_height, params, mapping_table);
+				gen_equi_mapping_table<cv::INTER_LINEAR, true, true>(width, height, in_width, in_height, params, mapping_table);
 				break;
 			}
 		}
@@ -407,10 +414,10 @@ void gen_equi_mapping_table(int width, int height, int in_height, cv::Interpolat
 			switch (interpol_t)
 			{
 			case cv::INTER_NEAREST:
-				gen_equi_mapping_table<cv::INTER_NEAREST, true, false>(width, height, in_height, params, mapping_table);
+				gen_equi_mapping_table<cv::INTER_NEAREST, true, false>(width, height, in_width, in_height, params, mapping_table);
 				break;
 			case cv::INTER_LINEAR:
-				gen_equi_mapping_table<cv::INTER_LINEAR, true, false>(width, height, in_height, params, mapping_table);
+				gen_equi_mapping_table<cv::INTER_LINEAR, true, false>(width, height, in_width, in_height, params, mapping_table);
 				break;
 			}
 		}
@@ -422,10 +429,10 @@ void gen_equi_mapping_table(int width, int height, int in_height, cv::Interpolat
 			switch (interpol_t)
 			{
 			case cv::INTER_NEAREST:
-				gen_equi_mapping_table<cv::INTER_NEAREST, false, true>(width, height, in_height, params, mapping_table);
+				gen_equi_mapping_table<cv::INTER_NEAREST, false, true>(width, height, in_width, in_height, params, mapping_table);
 				break;
 			case cv::INTER_LINEAR:
-				gen_equi_mapping_table<cv::INTER_LINEAR, false, true>(width, height, in_height, params, mapping_table);
+				gen_equi_mapping_table<cv::INTER_LINEAR, false, true>(width, height, in_width, in_height, params, mapping_table);
 				break;
 			}
 		}
@@ -434,10 +441,10 @@ void gen_equi_mapping_table(int width, int height, int in_height, cv::Interpolat
 			switch (interpol_t)
 			{
 			case cv::INTER_NEAREST:
-				gen_equi_mapping_table<cv::INTER_NEAREST, false, false>(width, height, in_height, params, mapping_table);
+				gen_equi_mapping_table<cv::INTER_NEAREST, false, false>(width, height, in_width, in_height, params, mapping_table);
 				break;
 			case cv::INTER_LINEAR:
-				gen_equi_mapping_table<cv::INTER_LINEAR, false, false>(width, height, in_height, params, mapping_table);
+				gen_equi_mapping_table<cv::INTER_LINEAR, false, false>(width, height, in_width, in_height, params, mapping_table);
 				break;
 			}
 		}
@@ -733,21 +740,22 @@ void parse_args(int argc, char **argv, program_args &args)
 				cerr << "Parameters can be either given by command line oder by file but not both." << endl;
 				exit(EXIT_FAILURE);
 			}
-			i += 12;
+			i += 13;
 			if (i < argc)
 			{
-				args.parameter.x_off_front = stod(argv[i - 11]);
-				args.parameter.y_off_front = stod(argv[i - 10]);
-				args.parameter.radius_front = stod(argv[i - 9]);
-				args.parameter.rot_front = stod(argv[i - 8]);
-				args.parameter.x_off_rear = stod(argv[i - 7]);
-				args.parameter.y_off_rear = stod(argv[i - 6]);
-				args.parameter.radius_rear = stod(argv[i - 5]);
-				args.parameter.rot_rear = stod(argv[i - 4]);
-				args.parameter.front_limit = stod(argv[i - 3]);
-				args.parameter.blend_limit = stod(argv[i - 2]);
-				args.parameter.blend_size = stod(argv[i - 1]);
-				args.parameter.orientation = stod(argv[i]);
+				args.parameter.x_off_front = stod(argv[i - 12]);
+				args.parameter.y_off_front = stod(argv[i - 11]);
+				args.parameter.radius_front = stod(argv[i - 10]);
+				args.parameter.rot_front = stod(argv[i - 9]);
+				args.parameter.x_off_rear = stod(argv[i - 8]);
+				args.parameter.y_off_rear = stod(argv[i - 7]);
+				args.parameter.radius_rear = stod(argv[i - 6]);
+				args.parameter.rot_rear = stod(argv[i - 5]);
+				args.parameter.front_limit = stod(argv[i - 4]);
+				args.parameter.blend_limit = stod(argv[i - 3]);
+				args.parameter.blend_size = stod(argv[i - 2]);
+				args.parameter.orientation = stod(argv[i - 1]);
+				args.parameter.time_offset = stod(argv[i]);
 			}
 			else
 			{
@@ -1417,7 +1425,7 @@ void process_input(program_args &args)
 		{
 			if (!args.param_path.empty())
 				read_mapping_params(args.param_path, args.parameter);
-			gen_equi_mapping_table<interpol_t, true, true>(args.out_width, args.out_height, frame_1.rows, &args.parameter, mapping_table);
+			gen_equi_mapping_table<interpol_t, true, true>(args.out_width, args.out_height, frame_1.cols / 2, frame_1.rows, &args.parameter, mapping_table);
 		}
 
 		#ifdef WITH_CUDA
@@ -1544,7 +1552,7 @@ void process_input(program_args &args)
 		{
 			if (!args.param_path.empty())
 				read_mapping_params(args.param_path, args.parameter);
-			gen_equi_mapping_table<interpol_t, false, true>(args.out_width, args.out_height, frame_1.rows, &args.parameter, mapping_table);
+			gen_equi_mapping_table<interpol_t, false, true>(args.out_width, args.out_height, frame_1.cols, frame_1.rows, &args.parameter, mapping_table);
 		}
 
 		#ifdef WITH_CUDA
@@ -1569,12 +1577,12 @@ void process_input(program_args &args)
 			return;
 		}
 
-		// check length
-		if (cap_1.get(cv::CAP_PROP_FRAME_COUNT) != cap_2.get(cv::CAP_PROP_FRAME_COUNT))
-		{
-			cerr << "Input 1 and 2 differ in length." << endl;
-			exit(EXIT_FAILURE);
-		}
+		// // check length
+		// if (cap_1.get(cv::CAP_PROP_FRAME_COUNT) != cap_2.get(cv::CAP_PROP_FRAME_COUNT))
+		// {
+		// 	cerr << "Input 1 and 2 differ in length." << endl;
+		// 	exit(EXIT_FAILURE);
+		// }
 
 		// calculate (max) number of output frames
 		if (args.num_frames > 0)
@@ -1605,8 +1613,8 @@ void process_input(program_args &args)
 		}
 
 		// jump back to beginning
-		cap_1.set(cv::CAP_PROP_POS_FRAMES, 0);
-		cap_2.set(cv::CAP_PROP_POS_FRAMES, 0);
+		cap_1.set(cv::CAP_PROP_POS_FRAMES, args.parameter.time_offset < 0 ? -args.parameter.time_offset : 0);
+		cap_2.set(cv::CAP_PROP_POS_FRAMES, args.parameter.time_offset > 0 ? args.parameter.time_offset : 0);
 
 		// do mapping
 		switch (args.prog_mode)
@@ -1986,19 +1994,19 @@ size_t mapper::get_frameskip()
 void mapper::start() { this->running = true; }
 void mapper::stop() { this->running = false; }
 
-mapping::mapping(int input_height, bool single_input, cv::InterpolationFlags interpol_t, const cv::Size &out_res)
+mapping::mapping(const cv::Size &in_res, bool single_input, cv::InterpolationFlags interpol_t, const cv::Size &out_res)
 {
 	if (out_res.width > 0 && out_res.height > 0)
 		this->out_res = out_res;
 	else
-		this->out_res = cv::Size(input_height * 2, input_height);
-	this->input_height = input_height;
+		this->out_res = in_res;
+	this->in_res = in_res;
 	this->single_input = single_input;
 	this->set_interpolation(interpol_t);
 }
 
-mapping::mapping(const string &param_file, int input_height, bool single_input, cv::InterpolationFlags interpol_t, const cv::Size &out_res)
- : mapping(input_height, single_input, interpol_t, out_res)
+mapping::mapping(const string &param_file, const cv::Size &in_res, bool single_input, cv::InterpolationFlags interpol_t, const cv::Size &out_res)
+ : mapping(in_res, single_input, interpol_t, out_res)
 {
 	this->load_from_param(param_file);
 }
@@ -2042,10 +2050,10 @@ void mapping::gen_mapping_table()
 		switch (this->interpol_t)
 		{
 		case cv::INTER_NEAREST:
-			gen_equi_mapping_table<cv::INTER_NEAREST, true, true>(this->out_res.width, this->out_res.height, this->input_height, &(this->params), this->mapping_table);
+			gen_equi_mapping_table<cv::INTER_NEAREST, true, true>(this->out_res.width, this->out_res.height, this->in_res.width, this->in_res.height, &(this->params), this->mapping_table);
 			break;
 		case cv::INTER_LINEAR:
-			gen_equi_mapping_table<cv::INTER_LINEAR, true, true>(this->out_res.width, this->out_res.height, this->input_height, &(this->params), this->mapping_table);
+			gen_equi_mapping_table<cv::INTER_LINEAR, true, true>(this->out_res.width, this->out_res.height, this->in_res.width, this->in_res.height, &(this->params), this->mapping_table);
 			break;
 		default:
 			break;
@@ -2056,10 +2064,10 @@ void mapping::gen_mapping_table()
 		switch (this->interpol_t)
 		{
 		case cv::INTER_NEAREST:
-			gen_equi_mapping_table<cv::INTER_NEAREST, false, true>(this->out_res.width, this->out_res.height, this->input_height, &(this->params), this->mapping_table);
+			gen_equi_mapping_table<cv::INTER_NEAREST, false, true>(this->out_res.width, this->out_res.height, this->in_res.width, this->in_res.height, &(this->params), this->mapping_table);
 			break;
 		case cv::INTER_LINEAR:
-			gen_equi_mapping_table<cv::INTER_LINEAR, false, true>(this->out_res.width, this->out_res.height, this->input_height, &(this->params), this->mapping_table);
+			gen_equi_mapping_table<cv::INTER_LINEAR, false, true>(this->out_res.width, this->out_res.height, this->in_res.width, this->in_res.height, &(this->params), this->mapping_table);
 			break;
 		default:
 			break;
@@ -2110,7 +2118,7 @@ cv::InterpolationFlags mapping::get_interpolation() const
 void mapping::set_output_resolution(const cv::Size &res)
 {
 	this->out_res = res;
-	if (!this->mapping_table.data)
+	// if (!this->mapping_table.data)
 		this->gen_mapping_table();
 }
 const cv::Size& mapping::get_output_resolution() const

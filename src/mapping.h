@@ -31,7 +31,7 @@ struct calib_params
 {
 	double x_off_front, y_off_front, rot_front, radius_front,
 		x_off_rear, y_off_rear, rot_rear, radius_rear,
-		front_limit, blend_limit, blend_size, orientation;
+		front_limit, blend_limit, blend_size, orientation, time_offset;
 };
 
 #ifdef WITH_CUDA
@@ -60,7 +60,7 @@ struct extra_data {};
 #endif
 #endif
 
-void gen_equi_mapping_table(int width, int height, int in_height, cv::InterpolationFlags interpol_t, bool single_input, bool expand, const calib_params *const params, cv::Mat &mapping_table);
+void gen_equi_mapping_table(int width, int height, int in_width, int in_height, cv::InterpolationFlags interpol_t, bool single_input, bool expand, const calib_params *const params, cv::Mat &mapping_table);
 void cl_init_device(cv::InterpolationFlags interpol_t, bool single_input, const cv::Mat &mapping_table, const std::string &source, extra_data *data);
 void remap(const cv::Mat &in, const cv::Mat &map, cv::InterpolationFlags interpol_t, cv::Mat &out, extra_data &extra_data);
 void remap(const cv::Mat &in_1, const cv::Mat &in_2, const cv::Mat &map, cv::InterpolationFlags interpol_t, cv::Mat &out, extra_data &extra_data);
@@ -146,8 +146,8 @@ public:
 class mapping
 {
 public:
-	mapping(int input_height, bool single_input, cv::InterpolationFlags interpol_t = cv::INTER_LINEAR, const cv::Size &out_res = cv::Size());
-	mapping(const std::string &param_file, int input_height, bool single_input, cv::InterpolationFlags interpol_t = cv::INTER_LINEAR, const cv::Size &out_res = cv::Size());
+	mapping(const cv::Size &in_res, bool single_input, cv::InterpolationFlags interpol_t = cv::INTER_LINEAR, const cv::Size &out_res = cv::Size());
+	mapping(const std::string &param_file, const cv::Size &in_res, bool single_input, cv::InterpolationFlags interpol_t = cv::INTER_LINEAR, const cv::Size &out_res = cv::Size());
 
 	void load_from_table(const std::string &file);
 	void load_from_param(const std::string &file);
@@ -168,10 +168,9 @@ private:
 
 	extra_data data;
 	cv::Mat mapping_table; // one for both like fnc?
-	cv::Size out_res;
+	cv::Size in_res, out_res;
 	cv::InterpolationFlags interpol_t;
 	bool single_input;
-	int input_height;
 	calib_params params;
 	void (*remap_fnc_s)(const cv::Mat &, const cv::Mat &, cv::Mat &, const extra_data &);
 	void (*remap_fnc_d)(const cv::Mat &, const cv::Mat &, const cv::Mat &, cv::Mat &, const extra_data &);

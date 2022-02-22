@@ -21,12 +21,13 @@ typedef cv::Vec<double, 14> mte_t;
 
 const int FOV_DEFAULT = 190; // >= 180
 
-const int SLIDER_PIXEL_RANGE = 100, SLIDER_PIXEL_DEFAULT = SLIDER_PIXEL_RANGE / 2;
+const int SLIDER_PIXEL_RANGE = 200, SLIDER_PIXEL_DEFAULT = SLIDER_PIXEL_RANGE / 2;
 const int SLIDER_FACTOR_RANGE = 200, SLIDER_FACTOR_DEFAULT = SLIDER_FACTOR_RANGE / 2;
 const int SLIDER_ROTATION_RANGE = 3600, SLIDER_ROTATION_DEFAULT = SLIDER_ROTATION_RANGE / 2;
 const int SLIDER_ORIENTATION_RANGE = 360, SLIDER_ORIENTATION_DEFAULT = SLIDER_ORIENTATION_RANGE / 2;
-const int SLIDER_FOV_RANGE = 100, SLIDER_FOV_DEFAULT = 10;
+const int SLIDER_FOV_RANGE = 180, SLIDER_FOV_DEFAULT = 10;
 const int SLIDER_BLEND_RANGE = SLIDER_FOV_RANGE / 2, SLIDER_BLEND_DEFAULT = 0;
+const int SLIDER_TIME_RANGE = 600;
 const string SLIDER_PIXEL_NAME = string(" += slider - ") + to_string(SLIDER_PIXEL_DEFAULT);
 const string SLIDER_FACTOR_NAME = string(" *= slider / ") + to_string(SLIDER_FACTOR_DEFAULT);
 const string SLIDER_X_OFF_NAME = string("x") + SLIDER_PIXEL_NAME;
@@ -36,6 +37,7 @@ const string SLIDER_ROTATION_NAME = string("rotation = ((slider - ") + to_string
 const string SLIDER_ORIENTATION_NAME = string("orientation = (slider - ") + to_string(SLIDER_ORIENTATION_DEFAULT) + ")°";
 const string SLIDER_FOV_NAME = string("fov = (") + to_string(FOV_DEFAULT) + string(" + slider - ") + to_string(SLIDER_FOV_DEFAULT) + ")°";
 const string SLIDER_BLEND_NAME = string("blend size = (slider * 2)°");
+const string SLIDER_TIME_NAME = string("time += slider frames");
 
 const char CAMERA_FRONT_WINDOW_NAME[] = "Camera front";
 const char CAMERA_REAR_WINDOW_NAME[] = "Camera rear";
@@ -67,8 +69,8 @@ enum output_format
  */
 struct calib_slider_params
 {
-	int x_off_front, y_off_front, rot_front, radius_front, fov_front,
-		x_off_rear, y_off_rear, rot_rear, radius_rear, fov_rear,
+	int x_off_front, y_off_front, rot_front, radius_front, fov_front, time_front,
+		x_off_rear, y_off_rear, rot_rear, radius_rear, fov_rear, time_rear,
 		rot_both, blend_size, orientation;
 };
 
@@ -170,7 +172,7 @@ void parse_args(int argc, char **argv, program_args *args)
 		}
 		else if (strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "--parameters") == 0)
 		{
-			if (i >= argc - 11)
+			if (i >= argc - 15)
 			{
 				cout << "All paramters have to be given." << endl;
 				exit(1);
@@ -180,17 +182,21 @@ void parse_args(int argc, char **argv, program_args *args)
 			args->params->rot_front = stoi(argv[i + 3]);
 			args->params->radius_front = stoi(argv[i + 4]);
 			args->params->fov_front = stoi(argv[i + 5]);
+			args->params->time_front = stoi(argv[i + 6]);
 
-			args->params->x_off_rear = stoi(argv[i + 6]);
-			args->params->y_off_rear = stoi(argv[i + 7]);
-			args->params->rot_rear = stoi(argv[i + 8]);
-			args->params->radius_rear = stoi(argv[i + 9]);
-			args->params->fov_rear = stoi(argv[i + 10]);
+			args->params->x_off_rear = stoi(argv[i + 7]);
+			args->params->y_off_rear = stoi(argv[i + 8]);
+			args->params->rot_rear = stoi(argv[i + 9]);
+			args->params->radius_rear = stoi(argv[i + 10]);
+			args->params->fov_rear = stoi(argv[i + 11]);
+			args->params->time_rear = stoi(argv[i + 12]);
 
-			args->params->blend_size = stoi(argv[i + 11]);
+			args->params->rot_both = stoi(argv[i + 13]);
+			args->params->orientation = stoi(argv[i + 14]);
+			args->params->blend_size = stoi(argv[i + 15]);
 
 			args->has_parameters = true;
-			i += 11;
+			i += 15;
 		}
 		else if (strcmp(argv[i], "-m") == 0 || strcmp(argv[i], "--map") == 0)
 		{
@@ -254,14 +260,32 @@ void parse_args(int argc, char **argv, program_args *args)
 		args->has_output = true;
 }
 
+int last_time_front = 0, last_time_rear = 0;
+
+void cb_time_front(int val, void *data)
+{
+	cv::VideoCapture *cap = (cv::VideoCapture*) data;
+	
+	cap->set(cv::CAP_PROP_POS_FRAMES, cap->get(cv::CAP_PROP_POS_FRAMES) + val - last_time_front);
+	last_time_front = val;
+}
+
+void cb_time_rear(int val, void *data)
+{
+	cv::VideoCapture *cap = (cv::VideoCapture*) data;
+	
+	cap->set(cv::CAP_PROP_POS_FRAMES, cap->get(cv::CAP_PROP_POS_FRAMES) + val - last_time_rear);
+	last_time_rear = val;
+}
+
 int main(int argc, char **argv)
 {
 	int i, j;
 	int height, width;
 	program_args args = {0};
 	calib_params params = {0};
-	calib_slider_params slider_params = {SLIDER_FACTOR_DEFAULT, SLIDER_FACTOR_DEFAULT, SLIDER_ROTATION_DEFAULT, SLIDER_FACTOR_DEFAULT, SLIDER_FOV_DEFAULT,
-										 SLIDER_FACTOR_DEFAULT, SLIDER_FACTOR_DEFAULT, SLIDER_ROTATION_DEFAULT, SLIDER_FACTOR_DEFAULT, SLIDER_FOV_DEFAULT,
+	calib_slider_params slider_params = {SLIDER_PIXEL_DEFAULT, SLIDER_PIXEL_DEFAULT, SLIDER_ROTATION_DEFAULT, SLIDER_FACTOR_DEFAULT, SLIDER_FOV_DEFAULT, 0,
+										 SLIDER_PIXEL_DEFAULT, SLIDER_PIXEL_DEFAULT, SLIDER_ROTATION_DEFAULT, SLIDER_FACTOR_DEFAULT, SLIDER_FOV_DEFAULT, 0,
 										 SLIDER_ROTATION_DEFAULT, 0, SLIDER_ORIENTATION_DEFAULT};
 
 	args.params = &slider_params;
@@ -307,7 +331,7 @@ int main(int argc, char **argv)
 				printf("Couldn't set heigth to %d\n", args.height);
 		}
 
-		width = cap.get(CAP_PROP_FRAME_WIDTH);
+		width = cap.get(CAP_PROP_FRAME_WIDTH) / 2;
 		height = cap.get(CAP_PROP_FRAME_HEIGHT);
 	}
 	else
@@ -361,7 +385,7 @@ int main(int argc, char **argv)
 				printf("Couldn't set rear heigth to %d\n", args.height);
 		}
 
-		width = cap_front.get(CAP_PROP_FRAME_WIDTH) * 2;
+		width = cap_front.get(CAP_PROP_FRAME_WIDTH);
 		height = cap_front.get(CAP_PROP_FRAME_HEIGHT);
 	}
 
@@ -374,17 +398,21 @@ int main(int argc, char **argv)
 	resizeWindow(PREVIEW_WINDOW_NAME, 1440, 720);
 
 	// create slider
-	createTrackbar(SLIDER_X_OFF_NAME, CAMERA_FRONT_WINDOW_NAME, &(slider_params.x_off_front), SLIDER_FACTOR_RANGE);
-	createTrackbar(SLIDER_Y_OFF_NAME, CAMERA_FRONT_WINDOW_NAME, &(slider_params.y_off_front), SLIDER_FACTOR_RANGE);
+	createTrackbar(SLIDER_X_OFF_NAME, CAMERA_FRONT_WINDOW_NAME, &(slider_params.x_off_front), SLIDER_PIXEL_RANGE);
+	createTrackbar(SLIDER_Y_OFF_NAME, CAMERA_FRONT_WINDOW_NAME, &(slider_params.y_off_front), SLIDER_PIXEL_RANGE);
 	createTrackbar(SLIDER_RADIUS_NAME, CAMERA_FRONT_WINDOW_NAME, &(slider_params.radius_front), SLIDER_FACTOR_RANGE);
 	createTrackbar(SLIDER_ROTATION_NAME, CAMERA_FRONT_WINDOW_NAME, &(slider_params.rot_front), SLIDER_ROTATION_RANGE);
 	// createTrackbar(SLIDER_FOV_NAME, CAMERA_FRONT_WINDOW_NAME, &(slider_params.fov_front), SLIDER_FOV_RANGE);
+	if (!args.is_single_input)
+		createTrackbar(SLIDER_TIME_NAME, CAMERA_FRONT_WINDOW_NAME, &(slider_params.time_front), SLIDER_TIME_RANGE, cb_time_front, &cap_front);
 
-	createTrackbar(SLIDER_X_OFF_NAME, CAMERA_REAR_WINDOW_NAME, &(slider_params.x_off_rear), SLIDER_FACTOR_RANGE);
-	createTrackbar(SLIDER_Y_OFF_NAME, CAMERA_REAR_WINDOW_NAME, &(slider_params.y_off_rear), SLIDER_FACTOR_RANGE);
+	createTrackbar(SLIDER_X_OFF_NAME, CAMERA_REAR_WINDOW_NAME, &(slider_params.x_off_rear), SLIDER_PIXEL_RANGE);
+	createTrackbar(SLIDER_Y_OFF_NAME, CAMERA_REAR_WINDOW_NAME, &(slider_params.y_off_rear), SLIDER_PIXEL_RANGE);
 	createTrackbar(SLIDER_RADIUS_NAME, CAMERA_REAR_WINDOW_NAME, &(slider_params.radius_rear), SLIDER_FACTOR_RANGE);
 	createTrackbar(SLIDER_ROTATION_NAME, CAMERA_REAR_WINDOW_NAME, &(slider_params.rot_rear), SLIDER_ROTATION_RANGE);
 	// createTrackbar(SLIDER_FOV_NAME, CAMERA_REAR_WINDOW_NAME, &(slider_params.fov_rear), SLIDER_FOV_RANGE);
+	if (!args.is_single_input)
+		createTrackbar(SLIDER_TIME_NAME, CAMERA_REAR_WINDOW_NAME, &(slider_params.time_rear), SLIDER_TIME_RANGE, cb_time_rear, &cap_rear);
 
 	createTrackbar(SLIDER_FOV_NAME, PREVIEW_WINDOW_NAME, &(slider_params.fov_front), SLIDER_FOV_RANGE);
 	createTrackbar(SLIDER_ROTATION_NAME, PREVIEW_WINDOW_NAME, &(slider_params.rot_both), SLIDER_ROTATION_RANGE);
@@ -394,7 +422,7 @@ int main(int argc, char **argv)
 	Mat frame, frame_front, frame_rear, equiframe, drawframe_front, drawframe_rear;
 	Point center_f, center_r, line_f, line_r;
 	Scalar prev_color(0, 255, 0), prev_blend_color(0, 127, 255);
-	int radius_f, radius_r, radius_blend_f, radius_blend_r, ch = 0, height_2 = height / 2, line_width = width / 1000 + 1;
+	int radius_f, radius_r, radius_blend_f, radius_blend_r, ch = 0, width_2 = width / 2, height_2 = height / 2, size = width > height ? width : height, size_2 = size / 2, line_width = width * 2 / 1000 + 1;
 	bool paused = false, play_once = false, video_input = true;
 
 	// get first image and check if the file is empty
@@ -430,7 +458,7 @@ int main(int argc, char **argv)
 		if (!cap_front.grab()) video_input = false;
 	}
 	// init output image
-	equiframe.create(height, width, frame_front.type());
+	equiframe.create(height, width * 2, frame_front.type());
 	// equiframe.create(height, width / 4 * 3, frame_front.type());
 	// create mapping table
 	Mat mapping_table;
@@ -441,7 +469,7 @@ int main(int argc, char **argv)
 	CL_ARGERR_CHECK( extra_data.cmdq = cl::CommandQueue(extra_data.ctxt, 0, &_cl_error); )
 	CL_ARGERR_CHECK( extra_data.prog = cl::Program(extra_data.ctxt, string((char*) src_mapping_cl, src_mapping_cl_len), true, &_cl_error); )
 	CL_ARGERR_CHECK( extra_data.k = cl::Kernel(extra_data.prog, "remap_nearest", &_cl_error); )
-	size_t elelen = width * height;
+	size_t elelen = equiframe.cols * equiframe.rows;
 	extra_data.global_size = cl::NDRange(elelen % extra_data::LOCAL_SIZE == 0 ? elelen : elelen + extra_data::LOCAL_SIZE - elelen % extra_data::LOCAL_SIZE);
 	CL_ARGERR_CHECK( extra_data.map = cl::Buffer(extra_data.ctxt, CL_MEM_READ_WRITE, elelen * 14 * 8, NULL, &_cl_error); )
 	CL_ARGERR_CHECK( extra_data.in_1 = cl::Buffer(extra_data.ctxt, CL_MEM_READ_WRITE, elelen * 3, NULL, &_cl_error); )
@@ -514,12 +542,12 @@ int main(int argc, char **argv)
 				if (frame_front.empty() || frame_rear.empty())
 				{
 					// try to jump to start and exit if not possible
-					if (!cap_front.set(CAP_PROP_POS_FRAMES, 0))
+					if (!cap_front.set(CAP_PROP_POS_FRAMES, params.time_offset < 0 ? -params.time_offset : 0))
 					{
 						cout << "end of front video" << endl;
 						break;
 					}
-					if (!cap_rear.set(CAP_PROP_POS_FRAMES, 0))
+					if (!cap_rear.set(CAP_PROP_POS_FRAMES, params.time_offset > 0 ? params.time_offset : 0))
 					{
 						cout << "end of rear video" << endl;
 						break;
@@ -559,6 +587,7 @@ int main(int argc, char **argv)
 		params.blend_limit = M_PI_2 + params.blend_size;
 		params.front_limit = M_PI_2 - params.blend_size;
 		params.blend_size *= 2;
+		params.time_offset = slider_params.time_rear - slider_params.time_front;
 		TIMES(slid_e = chrono::steady_clock::now(); slid_sum += chrono::duration_cast<std::chrono::duration<double>>(slid_e - slid_s).count();)
 
 		TIMES(prev_s = chrono::steady_clock::now();)
@@ -567,13 +596,13 @@ int main(int argc, char **argv)
 		drawframe_rear = frame_rear.clone();
 
 		// Center coordinates for preview
-		center_f.x = height_2 + params.x_off_front;
+		center_f.x = width_2 + params.x_off_front;
 		center_f.y = height_2 + params.y_off_front;
-		center_r.x = height_2 + params.x_off_rear;
+		center_r.x = width_2 + params.x_off_rear;
 		center_r.y = height_2 + params.y_off_rear;
 
-		radius_f = height_2 * params.radius_front;
-		radius_r = height_2 * params.radius_rear;
+		radius_f = size_2 * params.radius_front;
+		radius_r = size_2 * params.radius_rear;
 		radius_blend_f = radius_f * (2 - params.front_limit / M_PI_2);
 		radius_blend_r = radius_r * params.blend_limit / M_PI_2;
 		line_f.x = center_f.x + radius_f * cos(params.rot_front - M_PI_2);
@@ -594,7 +623,7 @@ int main(int argc, char **argv)
 
 		// mapping
 		TIMES(genm_s = chrono::steady_clock::now();)
-		gen_equi_mapping_table(width, height, height, cv::INTER_NEAREST, args.is_single_input, true, &params, mapping_table);
+		gen_equi_mapping_table(equiframe.cols, equiframe.rows, width, height, cv::INTER_NEAREST, args.is_single_input, true, &params, mapping_table);
 		#ifdef WITH_OPENCL
 		CL_RETERR_CHECK( extra_data.cmdq.enqueueWriteBuffer(extra_data.map, CL_TRUE, 0, mapping_table.dataend - mapping_table.datastart, mapping_table.data) );
 		#endif
@@ -679,7 +708,7 @@ int main(int argc, char **argv)
 	else
 		cout << ' ' << args.file_front << ' ' << args.file_rear;
 	if (args.has_resolution)
-		cout << " -r " << width << ' ' << height;
+		cout << " -r " << args.width << ' ' << args.height;
 	if (args.has_fps)
 		cout << " -f " << args.fps;
 	if (args.has_fourcc)
@@ -692,8 +721,9 @@ int main(int argc, char **argv)
 		cout << " -cv";
 	if (args.has_output)
 		cout << " -o " << args.output_file;
-	cout << " -p " << slider_params.x_off_front << ' ' << slider_params.y_off_front << ' ' << slider_params.rot_front << ' ' << slider_params.radius_front << ' ' << slider_params.fov_front
-		 << ' ' << slider_params.x_off_rear << ' ' << slider_params.y_off_rear << ' ' << slider_params.rot_rear << ' ' << slider_params.radius_rear << ' ' << slider_params.fov_rear << ' ' << slider_params.blend_size << endl;
+	cout << " -p " << slider_params.x_off_front << ' ' << slider_params.y_off_front << ' ' << slider_params.rot_front << ' ' << slider_params.radius_front << ' ' << slider_params.fov_front << ' ' << slider_params.time_front
+		 << ' ' << slider_params.x_off_rear << ' ' << slider_params.y_off_rear << ' ' << slider_params.rot_rear << ' ' << slider_params.radius_rear << ' ' << slider_params.fov_rear << ' ' << slider_params.time_rear
+		 << ' ' << slider_params.rot_both << ' ' << slider_params.orientation << ' ' << slider_params.blend_size << endl;
 
 	// write output to file if enter was pressed
 	if (ch == 10 || ch == 13)
@@ -704,16 +734,16 @@ int main(int argc, char **argv)
 		{
 			output_file << params.x_off_front << ' ' << params.y_off_front << ' ' << params.radius_front << ' ' << params.rot_front << ' '
 						<< params.x_off_rear << ' ' << params.y_off_rear << ' ' << params.radius_rear << ' ' << params.rot_rear << ' '
-						<< params.front_limit << ' ' << params.blend_limit << ' ' << params.blend_size << ' ' << params.orientation;
+						<< params.front_limit << ' ' << params.blend_limit << ' ' << params.blend_size << ' ' << params.orientation << ' ' << params.time_offset;
 		}
 		else
 		{
 			mte_t mte;
-			gen_equi_mapping_table(width, height, height, cv::INTER_NEAREST, args.is_single_input, false, &params, mapping_table);
-			output_file << width << ' ' << height << '\n';
-			for (j = 0; j < height; j++)
+			gen_equi_mapping_table(equiframe.cols, equiframe.rows, width, height, cv::INTER_NEAREST, args.is_single_input, false, &params, mapping_table);
+			output_file << equiframe.cols << ' ' << equiframe.rows << '\n';
+			for (j = 0; j < equiframe.rows; j++)
 			{
-				for (i = 0; i < width; i++)
+				for (i = 0; i < equiframe.cols; i++)
 				{
 					mte = mapping_table.at<mte_t>(j, i);
 					switch (args.format)
@@ -725,13 +755,13 @@ int main(int argc, char **argv)
 						if (mte[4] > 0.5)
 							output_file << mte[0] << ' ' << mte[1] << '\n';
 						else
-							output_file << mte[2] + height << ' ' << mte[3] << '\n';
+							output_file << mte[2] + equiframe.rows << ' ' << mte[3] << '\n';
 						break;
 					case output_format::INTEGER:
 						if (mte[4] > 0.5)
 							output_file << (int) round(mte[0]) << ' ' << (int) round(mte[1]) << '\n';
 						else
-							output_file << (int) round(mte[2] + height) << ' ' << (int) round(mte[3]) << '\n';
+							output_file << (int) round(mte[2] + equiframe.rows) << ' ' << (int) round(mte[3]) << '\n';
 						break;
 					default:
 						break;

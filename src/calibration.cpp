@@ -458,8 +458,7 @@ int main(int argc, char **argv)
 		if (!cap_front.grab()) video_input = false;
 	}
 	// init output image
-	equiframe.create(height, width * 2, frame_front.type());
-	// equiframe.create(height, width / 4 * 3, frame_front.type());
+	equiframe.create(size_2, size, frame_front.type());
 	// create mapping table
 	Mat mapping_table;
 
@@ -469,18 +468,17 @@ int main(int argc, char **argv)
 	CL_ARGERR_CHECK( extra_data.cmdq = cl::CommandQueue(extra_data.ctxt, 0, &_cl_error); )
 	CL_ARGERR_CHECK( extra_data.prog = cl::Program(extra_data.ctxt, string((char*) src_mapping_cl, src_mapping_cl_len), true, &_cl_error); )
 	CL_ARGERR_CHECK( extra_data.k = cl::Kernel(extra_data.prog, "remap_nearest", &_cl_error); )
-	size_t elelen = equiframe.cols * equiframe.rows;
+	size_t elelen = equiframe.cols * equiframe.rows, in_memlen = width * height * 3;
 	extra_data.global_size = cl::NDRange(elelen % extra_data::LOCAL_SIZE == 0 ? elelen : elelen + extra_data::LOCAL_SIZE - elelen % extra_data::LOCAL_SIZE);
 	CL_ARGERR_CHECK( extra_data.map = cl::Buffer(extra_data.ctxt, CL_MEM_READ_WRITE, elelen * 14 * 8, NULL, &_cl_error); )
-	CL_ARGERR_CHECK( extra_data.in_1 = cl::Buffer(extra_data.ctxt, CL_MEM_READ_WRITE, elelen * 3, NULL, &_cl_error); )
 	if (args.is_single_input)
 	{
-		CL_ARGERR_CHECK( extra_data.in_1 = cl::Buffer(extra_data.ctxt, CL_MEM_READ_WRITE, elelen * 3, NULL, &_cl_error); )
+		CL_ARGERR_CHECK( extra_data.in_1 = cl::Buffer(extra_data.ctxt, CL_MEM_READ_WRITE, in_memlen * 2, NULL, &_cl_error); )
 	}
 	else
 	{
-		CL_ARGERR_CHECK( extra_data.in_1 = cl::Buffer(extra_data.ctxt, CL_MEM_READ_WRITE, elelen / 2 * 3, NULL, &_cl_error); )
-		CL_ARGERR_CHECK( extra_data.in_2 = cl::Buffer(extra_data.ctxt, CL_MEM_READ_WRITE, elelen / 2 * 3, NULL, &_cl_error); )
+		CL_ARGERR_CHECK( extra_data.in_1 = cl::Buffer(extra_data.ctxt, CL_MEM_READ_WRITE, in_memlen, NULL, &_cl_error); )
+		CL_ARGERR_CHECK( extra_data.in_2 = cl::Buffer(extra_data.ctxt, CL_MEM_READ_WRITE, in_memlen, NULL, &_cl_error); )
 	}
 	CL_ARGERR_CHECK( extra_data.out = cl::Buffer(extra_data.ctxt, CL_MEM_READ_WRITE, elelen * 3, NULL, &_cl_error); )
 	CL_RETERR_CHECK( extra_data.k.setArg(0, extra_data.in_1) );

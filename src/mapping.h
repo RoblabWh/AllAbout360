@@ -61,7 +61,7 @@ struct extra_data {};
 #endif
 
 void gen_equi_mapping_table(int width, int height, int in_width, int in_height, cv::InterpolationFlags interpol_t, bool single_input, bool expand, const calib_params *const params, cv::Mat &mapping_table);
-void cl_init_device(cv::InterpolationFlags interpol_t, bool single_input, const cv::Mat &mapping_table, const std::string &source, extra_data *data);
+void cl_init_device(cv::InterpolationFlags interpol_t, bool single_input, const cv::Mat &mapping_table, size_t in_width, size_t in_height, const std::string &source, extra_data *data);
 void remap(const cv::Mat &in, const cv::Mat &map, cv::InterpolationFlags interpol_t, cv::Mat &out, extra_data &extra_data);
 void remap(const cv::Mat &in_1, const cv::Mat &in_2, const cv::Mat &map, cv::InterpolationFlags interpol_t, cv::Mat &out, extra_data &extra_data);
 

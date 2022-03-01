@@ -350,9 +350,10 @@ void gen_equi_mapping_table(int width, int height, int in_width, int in_height, 
 	double phi, theta;	  // equirectangular polar and azimuthal angle
 	double p_x, p_y, p_z; // 3D normalised cartesian fisheye vector
 
-	double ratio = in_width > in_height ? (double) in_height / (double) in_width : (double) in_width / (double) in_height;
-	double ratio_width = in_width > in_height ? 1 : ratio, ratio_height = in_width > in_height ? ratio : 1;
-	double ratio_width_offset = M_PI * (1 - ratio_width) / 2, ratio_height_offset = M_PI * (1 - ratio_height) / 2;
+	double width_2 = width / 2;
+	double ratio = width_2 > height ? (double) height  / (double) width_2 : (double) width_2 / (double) height;
+	double ratio_width = width_2 > height ? 1 : ratio, ratio_height = width_2 > height ? ratio : 1;
+	double ratio_width_offset = M_PI * (1 - ratio_width), ratio_height_offset = M_PI * (1 - ratio_height) / 2;
 
 	#ifdef ON_GPU
 	if constexpr (interpol_t == cv::INTER_NEAREST)
@@ -536,22 +537,22 @@ void gen_cube_mapping_table(int width, int height, int in_height, const calib_pa
 }
 
 #ifdef WITH_OPENCL
-void cl_init_device(cv::InterpolationFlags interpol_t, bool single_input, const cv::Mat &mapping_table, const string &source, extra_data *data)
+void cl_init_device(cv::InterpolationFlags interpol_t, bool single_input, const cv::Mat &mapping_table, size_t in_width, size_t in_height, const string &source, extra_data *data)
 {
 	CL_ARGERR_CHECK( data->ctxt = cl::Context(CL_DEVICE_TYPE_GPU, NULL, NULL, NULL, &_cl_error) );
 	CL_ARGERR_CHECK( data->cmdq = cl::CommandQueue(data->ctxt, 0, &_cl_error) );
 	CL_ARGERR_CHECK( data->prog = cl::Program(data->ctxt, source, true, &_cl_error) );
-	size_t elelen = mapping_table.rows * mapping_table.cols;
+	size_t elelen = mapping_table.rows * mapping_table.cols, in_memlen = in_width * in_height * 3;
 	data->global_size = cl::NDRange(elelen % extra_data::LOCAL_SIZE == 0 ? elelen : elelen + extra_data::LOCAL_SIZE - elelen % extra_data::LOCAL_SIZE);
 	CL_ARGERR_CHECK( data->map = cl::Buffer(data->ctxt, CL_MEM_READ_WRITE, mapping_table.dataend - mapping_table.datastart, NULL, &_cl_error) );
 	if (single_input)
 	{
-		CL_ARGERR_CHECK( data->in_1 = cl::Buffer(data->ctxt, CL_MEM_READ_WRITE, elelen * 3, NULL, &_cl_error) );
+		CL_ARGERR_CHECK( data->in_1 = cl::Buffer(data->ctxt, CL_MEM_READ_WRITE, in_memlen * 2, NULL, &_cl_error) );
 	}
 	else
 	{
-		CL_ARGERR_CHECK( data->in_1 = cl::Buffer(data->ctxt, CL_MEM_READ_WRITE, elelen * 3 / 2, NULL, &_cl_error) );
-		CL_ARGERR_CHECK( data->in_2 = cl::Buffer(data->ctxt, CL_MEM_READ_WRITE, elelen * 3 / 2, NULL, &_cl_error) );
+		CL_ARGERR_CHECK( data->in_1 = cl::Buffer(data->ctxt, CL_MEM_READ_WRITE, in_memlen, NULL, &_cl_error) );
+		CL_ARGERR_CHECK( data->in_2 = cl::Buffer(data->ctxt, CL_MEM_READ_WRITE, in_memlen, NULL, &_cl_error) );
 	}
 	CL_ARGERR_CHECK( data->out = cl::Buffer(data->ctxt, CL_MEM_READ_WRITE, elelen * 3, NULL, &_cl_error) );
 	switch (interpol_t)
@@ -1405,8 +1406,9 @@ void process_input(program_args &args)
 		// set output resolution if none is set
 		if (args.out_width == 0 || args.out_height == 0)
 		{
-			args.out_width = frame_1.cols;
-			args.out_height = frame_1.rows;
+			int size = frame_1.cols / 2 > frame_1.rows ? frame_1.cols / 2 : frame_1.rows;
+			args.out_width = size * 2;
+			args.out_height = size;
 		}
 
 		// read / generate mapping table
@@ -1433,7 +1435,7 @@ void process_input(program_args &args)
 		init_device_memory(mapping_table.data, mapping_table.cols, mapping_table.rows);
 		#endif
 		#ifdef WITH_OPENCL
-		cl_init_device(interpol_t, true, mapping_table, string((char*) src_mapping_cl, src_mapping_cl_len), &extra_data);
+		cl_init_device(interpol_t, true, mapping_table, frame_1.cols / 2, frame_1.rows, string((char*) src_mapping_cl, src_mapping_cl_len), &extra_data);
 		#endif
 
 		// init output mat
@@ -1532,8 +1534,9 @@ void process_input(program_args &args)
 		// set output resolution if none is set
 		if (args.out_width == 0 || args.out_height == 0)
 		{
-			args.out_width = frame_1.cols * 2;
-			args.out_height = frame_1.rows;
+			int size = frame_1.cols > frame_1.rows ? frame_1.cols : frame_1.rows;
+			args.out_width = size * 2;
+			args.out_height = size;
 		}
 
 		// read / generate mapping table
@@ -1560,7 +1563,7 @@ void process_input(program_args &args)
 		init_device_memory(mapping_table.data, mapping_table.cols, mapping_table.rows);
 		#endif
 		#ifdef WITH_OPENCL
-		cl_init_device(interpol_t, false, mapping_table, string((char*) src_mapping_cl, src_mapping_cl_len), &extra_data);
+		cl_init_device(interpol_t, false, mapping_table, frame_1.cols, frame_1.rows, string((char*) src_mapping_cl, src_mapping_cl_len), &extra_data);
 		#endif
 
 		// init output mat
@@ -1999,7 +2002,11 @@ mapping::mapping(const cv::Size &in_res, bool single_input, cv::InterpolationFla
 	if (out_res.width > 0 && out_res.height > 0)
 		this->out_res = out_res;
 	else
-		this->out_res = in_res;
+	{
+		int size = in_res.width > in_res.height ? in_res.width : in_res.height;
+		this->out_res.width = size * 2;
+		this->out_res.height = size;
+	}
 	this->in_res = in_res;
 	this->single_input = single_input;
 	this->set_interpolation(interpol_t);
@@ -2074,7 +2081,7 @@ void mapping::gen_mapping_table()
 		}
 	}
 	#ifdef WITH_OPENCL
-	cl_init_device(this->interpol_t, this->single_input, this->mapping_table, std::string((char*)src_mapping_cl, src_mapping_cl_len), &(this->data));
+	cl_init_device(this->interpol_t, this->single_input, this->mapping_table, this->in_res.width, this->in_res.height, std::string((char*)src_mapping_cl, src_mapping_cl_len), &(this->data));
 	#endif
 }
 

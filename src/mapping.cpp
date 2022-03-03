@@ -955,9 +955,16 @@ void parse_args(int argc, char **argv, program_args &args)
 
 	// print input configuration
 	if (inc == 1)
-		cout << "Processing video file \"" << args.in_path_1 << "\" with mapping table \"" << args.map_path << "\"." << endl;
+		cout << "Processing video file \"" << args.in_path_1;
 	else
-		cout << "Processing video files \"" << args.in_path_1 << "\" and \"" << args.in_path_2 << "\" with mapping table \"" << args.map_path << "\"." << endl;
+		cout << "Processing video files \"" << args.in_path_1 << "\" and \"" << args.in_path_2;
+
+	if (!args.map_path.empty())
+		cout << "\" with mapping table \"" << args.map_path;
+	else if (!args.param_path.empty())
+		cout << "\" with parameter file \"" << args.param_path;
+
+	cout << "\" as \"" << args.out_path << args.out_extension << "\"." << endl;
 
 	DBG(
 		cout << "parsed arguments:"
@@ -987,7 +994,7 @@ void parse_args(int argc, char **argv, program_args &args)
 			 << "\n  output:             "
 			 << "\n    path:             " << args.out_path
 			 << "\n    extension:        " << args.out_extension
-			 << "\n    odec:             " << args.out_codec
+			 << "\n    codec:            " << args.out_codec
 			 << "\n    width:            " << args.out_width
 			 << "\n    height:           " << args.out_height
 			 << "\n  interpolation type: " << args.interpol_t
@@ -1148,6 +1155,7 @@ cv::Mat get_sharpest_image(cv::VideoCapture &in_1, cv::VideoCapture &in_2, const
 template <cv::InterpolationFlags interpol_t, bool single_input, program_mode prog_m>
 void process_video(cv::VideoCapture &in_1, cv::VideoCapture &in_2, const cv::Mat &map, cv::Mat &equiframe, cv::VideoWriter &wrt, const program_args &args, extra_data &extra_data)
 {
+	const int retries = 300;
 	cv::Mat frame_1, frame_2, grey, laplace, mean, stddev, best_frame;
 	cv::Size outres(args.out_width, args.out_height);
 	cv::Rect search_region(args.search_x * args.out_width, args.search_y * args.out_height,
@@ -1185,6 +1193,10 @@ void process_video(cv::VideoCapture &in_1, cv::VideoCapture &in_2, const cv::Mat
 			{
 				in_1 >> frame_1;
 				in_2 >> frame_2;
+				for (int i = 0; i < retries && frame_1.empty(); i++)
+					in_1 >> frame_1;
+				for (int i = 0; i < retries && frame_2.empty(); i++)
+					in_2 >> frame_2;
 				if (frame_1.empty() || frame_2.empty())
 					break;
 			}
@@ -1406,7 +1418,7 @@ void process_input(program_args &args)
 		// set output resolution if none is set
 		if (args.out_width == 0 || args.out_height == 0)
 		{
-			int size = frame_1.cols / 2 > frame_1.rows ? frame_1.cols / 2 : frame_1.rows;
+			int size = frame_1.cols / 2 < frame_1.rows ? frame_1.cols / 2 : frame_1.rows;
 			args.out_width = size * 2;
 			args.out_height = size;
 		}
@@ -1534,7 +1546,7 @@ void process_input(program_args &args)
 		// set output resolution if none is set
 		if (args.out_width == 0 || args.out_height == 0)
 		{
-			int size = frame_1.cols > frame_1.rows ? frame_1.cols : frame_1.rows;
+			int size = frame_1.cols < frame_1.rows ? frame_1.cols : frame_1.rows;
 			args.out_width = size * 2;
 			args.out_height = size;
 		}
@@ -2003,7 +2015,7 @@ mapping::mapping(const cv::Size &in_res, bool single_input, cv::InterpolationFla
 		this->out_res = out_res;
 	else
 	{
-		int size = in_res.width > in_res.height ? in_res.width : in_res.height;
+		int size = in_res.width < in_res.height ? in_res.width : in_res.height;
 		this->out_res.width = size * 2;
 		this->out_res.height = size;
 	}

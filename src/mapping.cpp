@@ -562,7 +562,14 @@ void cl_init_device(cv::InterpolationFlags interpol_t, bool single_input, const 
 		break;
 	case cv::INTER_LINEAR:
 		CL_ARGERR_CHECK( data->k = cl::Kernel(data->prog, "remap_linear", &_cl_error) );
-		CL_RETERR_CHECK( data->k.setArg(5, mapping_table.cols * 3) );
+		if (single_input)
+		{
+			CL_RETERR_CHECK( data->k.setArg(5, (unsigned int) in_width * 6) );
+		}
+		else
+		{
+			CL_RETERR_CHECK( data->k.setArg(5, (unsigned int) in_width * 3) );
+		}
 		break;
 	default:
 		cerr << "Interpolation type not supported." << endl;
